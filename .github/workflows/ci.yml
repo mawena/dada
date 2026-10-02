@@ -54,13 +54,18 @@ jobs:
       - name: install fuse3
         run: sudo apt-get update && sudo apt-get install -y fuse3
       - name: clippy (fuse feature)
-        run: cargo clippy -p dada-fuse --features fuse --all-targets -- -D warnings
+        run: cargo clippy -p dada-fuse -p dada --features dada-fuse/fuse,dada/fuse --all-targets -- -D warnings
       - name: test (fuse feature)
-        run: cargo test -p dada-fuse --features fuse
+        run: cargo test -p dada-fuse -p dada --features dada-fuse/fuse,dada/fuse
       - name: build
-        run: cargo build --release -p dada-fuse --features fuse -p mkfs-dada -p fsck-dada -p dadactl
+        run: cargo build --release -p dada-fuse -p dada --features dada-fuse/fuse,dada/fuse -p mkfs-dada -p fsck-dada -p dadactl
       - name: mount test
         run: tests/fuse/run.sh
+      - name: dada command
+        run: tests/fuse/dada-cli.sh
+      # A loop device over an image in a temporary directory.
+      - name: dada as root (fuseblk, dada setup)
+        run: sudo tests/fuse/root.sh --with-setup "$PWD/target/release"
 
   fuse-macos:
     name: FUSE (macOS, build only)
@@ -75,7 +80,7 @@ jobs:
       - name: install macFUSE
         run: brew install --cask macfuse
       - name: build
-        run: cargo build -p dada-fuse --features macos
+        run: cargo build -p dada-fuse -p dada --features dada-fuse/macos,dada/macos
 
   winfsp:
     name: WinFsp (Windows)
