@@ -6,6 +6,7 @@ members = [
     "crates/mkfs-dada",
     "crates/fsck-dada",
     "crates/dadactl",
+    "crates/dada",
     "crates/dada-fuse",
     "crates/dada-winfsp",
     "tests",

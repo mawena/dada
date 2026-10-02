@@ -1,0 +1,34 @@
+[package]
+name = "dada"
+description = "The dada command: format, check, mount and inspect dada volumes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dada"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+dada-fuse = { path = "../dada-fuse" }
+dadactl = { path = "../dadactl" }
+env_logger = "0.11.11"
+fsck-dada = { path = "../fsck-dada" }
+libdada.workspace = true
+log = "0.4.34"
+mkfs-dada = { path = "../mkfs-dada" }
+uuid = "1.26.1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["fs", "user"] }
+
+[features]
+# Mounting with FUSE (Linux, macOS).
+fuse = ["dada-fuse/fuse"]
+# macOS: link against libfuse from macFUSE or FUSE-T.
+macos = ["dada-fuse/macos"]
+
+[dev-dependencies]
+tempfile = "3.27.0"

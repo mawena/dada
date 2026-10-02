@@ -83,6 +83,7 @@ dada/
 │   ├── mkfs-dada/             # binaire mkfs-dada
 │   ├── fsck-dada/             # binaire fsck-dada
 │   ├── dadactl/               # binaire dadactl (debug)
+│   ├── dada/                  # commande unique dada (format, mount, umount, check, setup…)
 │   ├── dada-fuse/             # adaptateur Linux / macOS
 │   └── dada-winfsp/           # adaptateur Windows
 ├── tests/                     # tests d'intégration sur images
@@ -104,6 +105,7 @@ dada/
 | Windows | `winfsp` |
 | Tests | `tempfile`, `proptest`, `rand` |
 | Logs | `log` + `env_logger` dans les binaires |
+| Appels système Unix (montage fuseblk) | `nix` (dada-fuse, dada) |
 
 Toute autre dépendance doit être proposée avant d'être ajoutée.
 

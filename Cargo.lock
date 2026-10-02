@@ -223,6 +223,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dada"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dada-fuse",
+ "dadactl",
+ "env_logger",
+ "fsck-dada",
+ "libdada",
+ "log",
+ "mkfs-dada",
+ "nix",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "dada-fuse"
 version = "0.1.0"
 dependencies = [
@@ -231,6 +248,7 @@ dependencies = [
  "fuser",
  "libdada",
  "log",
+ "nix",
 ]
 
 [[package]]
