@@ -174,6 +174,28 @@ pub mod ext {
 }
 
 // ---------------------------------------------------------------------------
+// Extent block (SPEC 4.7)
+// ---------------------------------------------------------------------------
+
+pub const EXTENT_BLOCK_MAGIC: [u8; 4] = *b"DEXT";
+
+/// Byte offsets of the extent block fields.
+pub mod xblk {
+    pub const MAGIC: usize = 0;
+    pub const COUNT: usize = 4;
+    pub const NEXT: usize = 8;
+    pub const OWNER: usize = 16;
+    pub const EXTENTS: usize = 24;
+    /// Header plus trailing checksum.
+    pub const OVERHEAD: usize = 28;
+}
+
+/// Number of extents an extent block holds.
+pub const fn extent_block_capacity(block_size: u32) -> usize {
+    (block_size as usize - xblk::OVERHEAD) / EXTENT_SIZE
+}
+
+// ---------------------------------------------------------------------------
 // Directories (SPEC 4.8)
 // ---------------------------------------------------------------------------
 
