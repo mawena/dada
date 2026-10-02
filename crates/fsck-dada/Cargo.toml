@@ -10,4 +10,8 @@ name = "fsck-dada"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
 libdada.workspace = true
+
+[dev-dependencies]
+rand = "0.9"
