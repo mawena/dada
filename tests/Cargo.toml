@@ -1,0 +1,18 @@
+[package]
+name = "dada-tests"
+description = "Integration tests of dada on image files"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+path = "common.rs"
+
+[[test]]
+name = "format_open"
+path = "format_open.rs"
+
+[dependencies]
+libdada.workspace = true
+tempfile = "3.27.0"

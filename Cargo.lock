@@ -154,6 +154,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dada-tests"
+version = "0.1.0"
+dependencies = [
+ "libdada",
+ "tempfile",
+]
+
+[[package]]
 name = "dada-winfsp"
 version = "0.1.0"
 dependencies = [
