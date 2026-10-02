@@ -11,7 +11,7 @@ Charles (mawena) et doit être reportée ici.
 | Taille de bloc | Puissance de 2 entre 1 024 et 65 536 ; 4 096 par défaut |
 | Adresse de bloc | u64, le bloc 0 est le début du volume |
 | Numéros d'inode | u64 ; 0 = invalide, 1 = racine, 2 = journal, 3 à 15 réservés, 16+ = utilisateurs |
-| Somme de contrôle | CRC32C (Castagnoli), calculée avec le champ checksum à 0 |
+| Somme de contrôle | CRC32C (Castagnoli) des octets qui précèdent le champ checksum dans la structure ; le champ lui-même n'est pas couvert (voir chaque structure pour les cas particuliers) |
 | Dates | i64, nanosecondes depuis 1970-01-01T00:00:00Z |
 | Champs réservés | Écrits à 0, ignorés en lecture |
 | Taille max d'un nom | 255 octets UTF-8 |
@@ -33,7 +33,9 @@ Charles (mawena) et doit être reportée ici.
 bs                  = block_size
 total_blocks        = taille_volume / bs
 inode_count         = arrondi_haut(taille_volume / inode_ratio, bs / 256 inodes par bloc)
-                      (inode_ratio par défaut = 16 384 octets ; minimum 64 inodes)
+                      (inode_ratio par défaut = 16 384 octets ; minimum 64 inodes,
+                      appliqué avant l'arrondi : inode_count est toujours un
+                      multiple de bs / 256)
 block_bitmap_blocks = ceil(total_blocks / (bs * 8))
 inode_bitmap_blocks = ceil(inode_count  / (bs * 8))
 inode_table_blocks  = inode_count * 256 / bs
@@ -50,7 +52,8 @@ Refuser le formatage si `data_start + 16 > total_blocks - 1` (volume trop petit)
 
 Bitmaps : le bit `i` correspond au bit `i % 8` (bit de poids faible d'abord) de
 l'octet `i / 8`. Bit à 1 = occupé. Les bits au-delà de `total_blocks` /
-`inode_count` dans le dernier octet sont mis à 1.
+`inode_count` sont mis à 1, dans le dernier octet comme dans tous les octets
+suivants jusqu'à la fin de la zone bitmap.
 
 Dans la bitmap des blocs, tous les blocs de 0 à `data_start - 1` et le bloc
 `total_blocks - 1` sont marqués occupés. Dans la bitmap des inodes, les inodes
@@ -163,7 +166,7 @@ Offset 4   : count u32       — extents valides dans ce bloc
 Offset 8   : next u64        — bloc d'extents suivant (0 = fin)
 Offset 16  : owner_ino u64   — inode propriétaire
 Offset 24  : extents[count]  — 24 octets chacun
-Fin - 4    : checksum CRC32C du bloc (champ à 0)
+Fin - 4    : checksum CRC32C des octets 0 .. bs - 4
 ```
 
 Capacité par bloc : `(bs - 28) / 24` extents. La liste complète d'un inode est :
@@ -227,17 +230,17 @@ Bloc 0 du journal — en-tête :
 16   head u64          — index (relatif, ≥ 1) de la plus ancienne transaction non appliquée
 24   tail u64          — index où écrire la prochaine transaction
 32   ...               — 0
-bs-4 checksum CRC32C
+bs-4 checksum CRC32C des octets 0 .. bs - 4
 ```
 
 Transaction, écrite à partir de `tail` (circulaire sur les blocs
 `1..journal_blocks-1`) :
 
 - Bloc descripteur : magic `DJDS`, seq u64, count u32, puis count adresses u64
-  des blocs cibles ; checksum en fin de bloc.
+  des blocs cibles ; checksum CRC32C des octets `0 .. bs - 4` à l'offset `bs - 4`.
 - `count` blocs de données : copie intégrale des nouvelles versions des blocs cibles.
 - Bloc commit : magic `DJCM`, seq u64, CRC32C de la concaténation descripteur
-  + blocs de données ; checksum en fin de bloc.
+  + blocs de données ; checksum CRC32C des octets `0 .. bs - 4` à l'offset `bs - 4`.
 
 Protocole d'écriture d'une opération de métadonnées :
 
