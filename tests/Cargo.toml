@@ -17,6 +17,10 @@ path = "format_open.rs"
 name = "tree"
 path = "tree.rs"
 
+[[test]]
+name = "fragmentation"
+path = "fragmentation.rs"
+
 [dependencies]
 libdada.workspace = true
 rand = "0.9"
