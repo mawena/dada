@@ -13,6 +13,11 @@ path = "common.rs"
 name = "format_open"
 path = "format_open.rs"
 
+[[test]]
+name = "tree"
+path = "tree.rs"
+
 [dependencies]
 libdada.workspace = true
+rand = "0.9"
 tempfile = "3.27.0"
