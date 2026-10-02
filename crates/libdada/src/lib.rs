@@ -32,7 +32,7 @@ pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
 pub use format::FORMAT_VERSION;
 pub use inode::FileKind;
-pub use volume::{format, Attr, DirEntryInfo, Ino, StatFs, Volume};
+pub use volume::{format, Attr, DirEntryInfo, Ino, SetAttr, StatFs, Volume};
 
 /// Parameters of `format`.
 #[derive(Debug, Clone, PartialEq, Eq)]
