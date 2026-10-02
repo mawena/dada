@@ -1558,6 +1558,34 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// For fsck: adds an entry `parent/name` for an allocated inode that no
+    /// directory references. Its link count is left as is; a directory gets
+    /// its `..` pointed at `parent`, which gains a link.
+    #[doc(hidden)]
+    pub fn attach_orphan(&mut self, ino: Ino, parent: Ino, name: &str) -> Result<(), DadaError> {
+        self.writable()?;
+        let name = normalize_new(name)?;
+        let inode = self.read_allocated(ino)?;
+        let kind = inode.kind()?;
+        let mut dir = self.open_dir(parent)?;
+        if self.dir_find(&dir, &name)?.is_some() {
+            return Err(DadaError::Exists);
+        }
+        self.dir_add(&mut dir, &name, ino, kind)?;
+        if kind == FileKind::Directory {
+            dir.inode.links = dir.inode.links.saturating_add(1);
+            let child = self.open_dir(ino)?;
+            let dotdot = self
+                .dir_find(&child, "..")?
+                .ok_or_else(|| DadaError::Corrupt(format!("directory {ino} has no ..")))?;
+            self.dir_set_target(&child, &dotdot, parent, FileKind::Directory)?;
+        }
+        let now = now_ns();
+        dir.inode.mtime = now;
+        dir.inode.ctime = now;
+        self.write_inode(parent, &dir.inode)
+    }
+
     /// Full extent list of a file, directory or symbolic link (empty for
     /// inline content).
     pub fn extents(&mut self, ino: Ino) -> Result<Vec<Extent>, DadaError> {
