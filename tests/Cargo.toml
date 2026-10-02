@@ -30,3 +30,7 @@ fsck-dada = { path = "../crates/fsck-dada" }
 libdada = { workspace = true, features = ["testing"] }
 rand = "0.9"
 tempfile = "3.27.0"
+
+[[bin]]
+name = "dada-crossos"
+path = "crossos.rs"
