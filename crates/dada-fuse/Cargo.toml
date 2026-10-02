@@ -10,10 +10,15 @@ name = "dada-fuse"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+env_logger = "0.11.11"
+fuser = { version = "0.18.0", default-features = false, optional = true }
 libdada.workspace = true
+log = "0.4.34"
 
 [features]
-# Real adapter, disabled by default so CI builds without libfuse (enabled at milestone 7).
-fuse = []
-# macOS build against macFUSE or FUSE-T.
-macos = ["fuse"]
+# The FUSE adapter. Off by default so that the workspace builds everywhere;
+# on Linux it mounts through fusermount3 and needs no libfuse headers.
+fuse = ["dep:fuser"]
+# macOS: link against libfuse from macFUSE or FUSE-T.
+macos = ["fuse", "fuser/libfuse"]
