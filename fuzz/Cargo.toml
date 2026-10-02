@@ -1,0 +1,44 @@
+[package]
+name = "dada-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+libdada = { path = "../crates/libdada" }
+
+# Kept out of the main workspace: it needs a nightly toolchain.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "superblock_decode"
+path = "fuzz_targets/superblock_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inode_decode"
+path = "fuzz_targets/inode_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dir_block_parse"
+path = "fuzz_targets/dir_block_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_image"
+path = "fuzz_targets/open_image.rs"
+test = false
+doc = false
+bench = false
