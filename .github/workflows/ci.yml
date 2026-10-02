@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,3 +39,16 @@ jobs:
           target/debug/mkfs-dada --label TEST "$img"
           target/debug/dadactl info "$img"
           target/debug/dadactl ls "$img" /
+
+  long-tests:
+    name: long tests (ignored)
+    # Several GiB of I/O: only on main and on demand.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ignored tests (release)
+        run: cargo test --release --workspace -- --ignored --nocapture
