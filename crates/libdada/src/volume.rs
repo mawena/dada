@@ -12,13 +12,14 @@ use crate::extent::{
     ExtentBlock,
 };
 use crate::format::{
-    extent_block_capacity, COMPAT_WIN_ATTRS, FIRST_USER_INO, INCOMPAT_EXTENT_BLOCKS,
-    INLINE_DATA_MAX, INODE_INLINE_EXTENTS, INODE_SIZE, INO_JOURNAL, INO_ROOT, MAX_NAME_LEN,
-    MODE_PERM_MASK, RESERVED_INODES, STATE_CLEAN, STATE_DIRTY,
+    extent_block_capacity, COMPAT_WIN_ATTRS, FIRST_USER_INO, INCOMPAT_CASEFOLD,
+    INCOMPAT_EXTENT_BLOCKS, INLINE_DATA_MAX, INODE_INLINE_EXTENTS, INODE_SIZE, INO_JOURNAL,
+    INO_ROOT, MAX_NAME_LEN, MODE_PERM_MASK, RESERVED_INODES, STATE_CLEAN, STATE_DIRTY,
 };
 use crate::inode::{FileKind, Inode, InodeData};
 use crate::layout::Layout;
 use crate::le::put_bytes;
+use crate::name::{normalize, normalize_new, NameMatcher};
 use crate::superblock::Superblock;
 use crate::{DadaError, FormatOptions};
 
@@ -265,25 +266,6 @@ struct Found {
     kind: FileKind,
 }
 
-fn check_name(name: &str) -> Result<(), DadaError> {
-    if name.len() > MAX_NAME_LEN {
-        return Err(DadaError::NameTooLong);
-    }
-    if name.is_empty() || name.contains(['/', '\0']) {
-        return Err(DadaError::InvalidName);
-    }
-    Ok(())
-}
-
-/// Name of a new entry: valid and not `.` or `..`.
-fn check_new_name(name: &str) -> Result<(), DadaError> {
-    check_name(name)?;
-    if name == "." || name == ".." {
-        return Err(DadaError::InvalidName);
-    }
-    Ok(())
-}
-
 /// An opened dada volume.
 pub struct Volume<D: BlockDevice> {
     dev: D,
@@ -447,6 +429,10 @@ impl<D: BlockDevice> Volume<D> {
             free_inodes: self.sb.free_inodes,
             max_name_len: MAX_NAME_LEN as u32,
         }
+    }
+
+    fn casefold(&self) -> bool {
+        self.sb.features_incompat & INCOMPAT_CASEFOLD != 0
     }
 
     fn bs(&self) -> u64 {
@@ -1036,11 +1022,12 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     fn dir_find(&mut self, dir: &Dir, name: &str) -> Result<Option<Found>, DadaError> {
+        let matcher = NameMatcher::new(name, self.casefold());
         for index in 0..dir.blocks {
             let (_, block) = self.read_dir_block(dir, index)?;
             let slot = block
                 .entries()
-                .find(|s| s.name == name)
+                .find(|s| matcher.matches(&s.name))
                 .map(|s| (s.offset, s.ino, s.kind));
             if let Some((offset, ino, kind)) = slot {
                 return Ok(Some(Found {
@@ -1215,7 +1202,8 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Looks up `name` in directory `parent`.
     pub fn lookup(&mut self, parent: Ino, name: &str) -> Result<Attr, DadaError> {
-        check_name(name)?;
+        let name = normalize(name)?;
+        let name = name.as_str();
         let dir = self.open_dir(parent)?;
         let found = self.dir_find(&dir, name)?.ok_or(DadaError::NotFound)?;
         let inode = self.read_referenced(parent, found.ino)?;
@@ -1232,7 +1220,8 @@ impl<D: BlockDevice> Volume<D> {
         init: impl FnOnce(&mut Self, Ino, &mut Inode) -> Result<(), DadaError>,
     ) -> Result<Attr, DadaError> {
         self.writable()?;
-        check_new_name(name)?;
+        let name = normalize_new(name)?;
+        let name = name.as_str();
         let mut dir = self.open_dir(parent)?;
         if self.dir_find(&dir, name)?.is_some() {
             return Err(DadaError::Exists);
@@ -1335,7 +1324,8 @@ impl<D: BlockDevice> Volume<D> {
 
     pub fn link(&mut self, ino: Ino, new_parent: Ino, new_name: &str) -> Result<Attr, DadaError> {
         self.writable()?;
-        check_new_name(new_name)?;
+        let new_name = normalize_new(new_name)?;
+        let new_name = new_name.as_str();
         let mut inode = self.read_allocated(ino)?;
         let kind = inode.kind()?;
         if kind == FileKind::Directory {
@@ -1358,7 +1348,8 @@ impl<D: BlockDevice> Volume<D> {
 
     pub fn unlink(&mut self, parent: Ino, name: &str) -> Result<(), DadaError> {
         self.writable()?;
-        check_name(name)?;
+        let name = normalize(name)?;
+        let name = name.as_str();
         let mut dir = self.open_dir(parent)?;
         let found = self.dir_find(&dir, name)?.ok_or(DadaError::NotFound)?;
         if found.kind == FileKind::Directory {
@@ -1381,7 +1372,8 @@ impl<D: BlockDevice> Volume<D> {
 
     pub fn rmdir(&mut self, parent: Ino, name: &str) -> Result<(), DadaError> {
         self.writable()?;
-        check_name(name)?;
+        let name = normalize(name)?;
+        let name = name.as_str();
         match name {
             "." => return Err(DadaError::Invalid),
             ".." => return Err(DadaError::NotEmpty),
@@ -1408,6 +1400,169 @@ impl<D: BlockDevice> Volume<D> {
         dir.inode.links = dir.inode.links.saturating_sub(1).max(2);
         self.write_inode(parent, &dir.inode)?;
         self.release_inode(found.ino, target.inode)
+    }
+
+    /// Whether directory `dir` is `ancestor` or lies below it.
+    fn is_within(&mut self, mut dir: Ino, ancestor: Ino) -> Result<bool, DadaError> {
+        // Each step goes one level up; a longer walk means a loop on disk.
+        for _ in 0..self.sb.inode_count {
+            if dir == ancestor {
+                return Ok(true);
+            }
+            if dir == INO_ROOT {
+                return Ok(false);
+            }
+            let handle = self.open_dir(dir)?;
+            let parent = self
+                .dir_find(&handle, "..")?
+                .ok_or_else(|| DadaError::Corrupt(format!("directory {dir} has no ..")))?;
+            dir = parent.ino;
+        }
+        Err(DadaError::Corrupt("directory loop".into()))
+    }
+
+    /// Points an existing entry of `dir` to another inode.
+    fn dir_set_target(
+        &mut self,
+        dir: &Dir,
+        found: &Found,
+        ino: Ino,
+        kind: FileKind,
+    ) -> Result<(), DadaError> {
+        let (lba, mut block) = self.read_dir_block(dir, found.index)?;
+        block.set_target(found.offset, ino, kind)?;
+        self.meta_write(lba, block.encode())
+    }
+
+    /// Adds `delta` to the link count of directory `ino` and updates its times.
+    fn touch_dir(&mut self, ino: Ino, delta: i64, now: i64) -> Result<(), DadaError> {
+        let mut inode = self.read_allocated(ino)?;
+        inode.links = u32::try_from(i64::from(inode.links) + delta)
+            .unwrap_or(2)
+            .max(2);
+        inode.mtime = now;
+        inode.ctime = now;
+        self.write_inode(ino, &inode)
+    }
+
+    /// Renames `parent/name` to `new_parent/new_name`, replacing a compatible
+    /// destination (POSIX semantics).
+    pub fn rename(
+        &mut self,
+        parent: Ino,
+        name: &str,
+        new_parent: Ino,
+        new_name: &str,
+    ) -> Result<(), DadaError> {
+        self.writable()?;
+        let name = normalize(name)?;
+        if name == "." || name == ".." {
+            return Err(DadaError::Invalid);
+        }
+        let new_name = normalize_new(new_name)?;
+        let src_dir = self.open_dir(parent)?;
+        let src = self.dir_find(&src_dir, &name)?.ok_or(DadaError::NotFound)?;
+        let dst_dir = self.open_dir(new_parent)?;
+        let dst = self.dir_find(&dst_dir, &new_name)?;
+        let moving_dir = src.kind == FileKind::Directory;
+        if moving_dir && self.is_within(new_parent, src.ino)? {
+            return Err(DadaError::Invalid);
+        }
+        let now = now_ns();
+
+        if let Some(d) = &dst {
+            if d.ino == src.ino {
+                // Same inode. Only a case change of the same entry does anything.
+                let same_entry =
+                    parent == new_parent && d.index == src.index && d.offset == src.offset;
+                if same_entry && name != new_name {
+                    let mut dir = self.open_dir(parent)?;
+                    self.dir_remove(&mut dir, &src)?;
+                    self.dir_add(&mut dir, &new_name, src.ino, src.kind)?;
+                    dir.inode.mtime = now;
+                    dir.inode.ctime = now;
+                    self.write_inode(parent, &dir.inode)?;
+                }
+                return Ok(());
+            }
+            match (moving_dir, d.kind == FileKind::Directory) {
+                (true, false) => return Err(DadaError::NotDir),
+                (false, true) => return Err(DadaError::IsDir),
+                (true, true) => {
+                    let target = self.open_dir(d.ino)?;
+                    if !self.dir_is_empty(&target)? {
+                        return Err(DadaError::NotEmpty);
+                    }
+                }
+                (false, false) => {}
+            }
+        }
+
+        // 1. The destination name now designates the source inode.
+        match &dst {
+            Some(d) => self.dir_set_target(&dst_dir, d, src.ino, src.kind)?,
+            None => {
+                let mut dir = self.open_dir(new_parent)?;
+                self.dir_add(&mut dir, &new_name, src.ino, src.kind)?;
+                self.write_inode(new_parent, &dir.inode)?;
+            }
+        }
+        // 2. The source name disappears.
+        let mut dir = self.open_dir(parent)?;
+        let old = self
+            .dir_find(&dir, &name)?
+            .filter(|f| f.ino == src.ino)
+            .ok_or_else(|| DadaError::Corrupt(format!("directory {parent}: entry vanished")))?;
+        self.dir_remove(&mut dir, &old)?;
+        self.write_inode(parent, &dir.inode)?;
+
+        // 3. A moved directory points `..` at its new parent.
+        if moving_dir && parent != new_parent {
+            let moved = self.open_dir(src.ino)?;
+            let dotdot = self
+                .dir_find(&moved, "..")?
+                .ok_or_else(|| DadaError::Corrupt(format!("directory {} has no ..", src.ino)))?;
+            self.dir_set_target(&moved, &dotdot, new_parent, FileKind::Directory)?;
+        }
+
+        // 4. Link counts and times.
+        let replaced_dir = dst.as_ref().is_some_and(|d| d.kind == FileKind::Directory);
+        let moved_across = moving_dir && parent != new_parent;
+        let parent_delta = if moved_across { -1 } else { 0 };
+        let new_parent_delta = i64::from(moved_across) - i64::from(replaced_dir);
+        if parent == new_parent {
+            self.touch_dir(parent, parent_delta + new_parent_delta, now)?;
+        } else {
+            self.touch_dir(parent, parent_delta, now)?;
+            self.touch_dir(new_parent, new_parent_delta, now)?;
+        }
+        let mut inode = self.read_referenced(new_parent, src.ino)?;
+        inode.ctime = now;
+        self.write_inode(src.ino, &inode)?;
+
+        // 5. The replaced inode loses a link.
+        if let Some(d) = dst {
+            let mut old = self.read_referenced(new_parent, d.ino)?;
+            if replaced_dir {
+                self.release_inode(d.ino, old)?;
+            } else {
+                old.links = old.links.saturating_sub(1);
+                if old.links == 0 {
+                    self.release_inode(d.ino, old)?;
+                } else {
+                    old.ctime = now;
+                    self.write_inode(d.ino, &old)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Full extent list of a file, directory or symbolic link (empty for
+    /// inline content).
+    pub fn extents(&mut self, ino: Ino) -> Result<Vec<Extent>, DadaError> {
+        let inode = self.read_allocated(ino)?;
+        Ok(self.load_extents(ino, &inode)?.0)
     }
 
     /// Reads up to `buf.len()` bytes at `offset`; returns 0 at end of file.
@@ -2211,5 +2366,181 @@ mod tests {
         vol.unlink(INO_ROOT, "f7").unwrap();
         vol.create(INO_ROOT, "one-more", 0o644, 0, 0).unwrap();
         check_counters(&vol);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rename and names
+    // -----------------------------------------------------------------------
+
+    fn ino_of(vol: &mut Volume<MemDevice>, parent: Ino, name: &str) -> Ino {
+        vol.lookup(parent, name).unwrap().ino
+    }
+
+    #[test]
+    fn rename_files() {
+        let mut vol = rw(4096, 8 * MIB);
+        let base = vol.statfs();
+        let a = vol.mkdir(INO_ROOT, "a", 0o755, 0, 0).unwrap().ino;
+        let f = vol.create(INO_ROOT, "f", 0o644, 0, 0).unwrap().ino;
+        vol.write(f, 0, &pattern(1, 9000)).unwrap();
+
+        // Same directory, then across directories.
+        vol.rename(INO_ROOT, "f", INO_ROOT, "g").unwrap();
+        assert!(matches!(
+            vol.lookup(INO_ROOT, "f"),
+            Err(DadaError::NotFound)
+        ));
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "g"), f);
+        vol.rename(INO_ROOT, "g", a, "h").unwrap();
+        assert_eq!(ino_of(&mut vol, a, "h"), f);
+        assert_eq!(read_all(&mut vol, f), pattern(1, 9000));
+
+        // Replacing an existing file releases it.
+        let other = vol.create(a, "other", 0o644, 0, 0).unwrap().ino;
+        vol.write(other, 0, &pattern(2, 9000)).unwrap();
+        vol.rename(a, "h", a, "other").unwrap();
+        assert_eq!(ino_of(&mut vol, a, "other"), f);
+        assert!(matches!(vol.getattr(other), Err(DadaError::NotFound)));
+        assert_eq!(names(&vol.readdir(a, 0).unwrap()), [".", "..", "other"]);
+
+        // Renaming onto a hard link of the same inode does nothing.
+        vol.link(f, INO_ROOT, "hard").unwrap();
+        vol.rename(INO_ROOT, "hard", a, "other").unwrap();
+        assert_eq!(vol.getattr(f).unwrap().links, 2);
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "hard"), f);
+
+        // A replaced file that still has another link survives.
+        let x = vol.create(INO_ROOT, "x", 0o644, 0, 0).unwrap().ino;
+        vol.rename(INO_ROOT, "x", INO_ROOT, "hard").unwrap();
+        assert_eq!(vol.getattr(f).unwrap().links, 1);
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "hard"), x);
+
+        vol.unlink(INO_ROOT, "hard").unwrap();
+        vol.unlink(a, "other").unwrap();
+        vol.rmdir(INO_ROOT, "a").unwrap();
+        assert_eq!(vol.statfs(), base);
+        check_counters(&vol);
+    }
+
+    #[test]
+    fn rename_directories() {
+        let mut vol = rw(4096, 8 * MIB);
+        let a = vol.mkdir(INO_ROOT, "a", 0o755, 0, 0).unwrap().ino;
+        let b = vol.mkdir(INO_ROOT, "b", 0o755, 0, 0).unwrap().ino;
+        let sub = vol.mkdir(a, "sub", 0o755, 0, 0).unwrap().ino;
+        vol.create(sub, "file", 0o644, 0, 0).unwrap();
+        assert_eq!(vol.getattr(INO_ROOT).unwrap().links, 4);
+
+        // Moving a directory updates `..` and both parents' link counts.
+        vol.rename(a, "sub", b, "moved").unwrap();
+        assert_eq!(ino_of(&mut vol, sub, ".."), b);
+        assert_eq!(vol.getattr(a).unwrap().links, 2);
+        assert_eq!(vol.getattr(b).unwrap().links, 3);
+        assert!(vol.lookup(sub, "file").is_ok());
+
+        // Cycles are refused.
+        assert!(matches!(
+            vol.rename(INO_ROOT, "b", sub, "x"),
+            Err(DadaError::Invalid)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, "b", b, "x"),
+            Err(DadaError::Invalid)
+        ));
+
+        // Type mismatches and non-empty targets.
+        let f = vol.create(INO_ROOT, "f", 0o644, 0, 0).unwrap().ino;
+        assert!(matches!(
+            vol.rename(INO_ROOT, "a", INO_ROOT, "f"),
+            Err(DadaError::NotDir)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, "f", INO_ROOT, "a"),
+            Err(DadaError::IsDir)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, "a", INO_ROOT, "b"),
+            Err(DadaError::NotEmpty)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, ".", INO_ROOT, "z"),
+            Err(DadaError::Invalid)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, "f", INO_ROOT, ".."),
+            Err(DadaError::InvalidName)
+        ));
+        assert!(matches!(
+            vol.rename(INO_ROOT, "nope", INO_ROOT, "z"),
+            Err(DadaError::NotFound)
+        ));
+
+        // Replacing an empty directory.
+        vol.rename(b, "moved", INO_ROOT, "a").unwrap();
+        assert!(matches!(vol.getattr(a), Err(DadaError::NotFound)));
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "a"), sub);
+        assert_eq!(ino_of(&mut vol, sub, ".."), INO_ROOT);
+        assert_eq!(vol.getattr(b).unwrap().links, 2);
+        assert_eq!(vol.getattr(INO_ROOT).unwrap().links, 4);
+        let _ = f;
+        check_counters(&vol);
+    }
+
+    fn casefold_volume() -> Volume<MemDevice> {
+        let mut dev = MemDevice::new(4096, 2048).unwrap();
+        let opts = FormatOptions {
+            casefold: true,
+            journal: false,
+            ..FormatOptions::default()
+        };
+        format(&mut dev, &opts).unwrap();
+        Volume::open(dev, false).unwrap()
+    }
+
+    #[test]
+    fn casefold_lookup_preserves_case() {
+        let mut vol = casefold_volume();
+        let f = vol.create(INO_ROOT, "Readme.TXT", 0o644, 0, 0).unwrap().ino;
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "README.txt"), f);
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "readme.txt"), f);
+        assert!(matches!(
+            vol.create(INO_ROOT, "README.txt", 0o644, 0, 0),
+            Err(DadaError::Exists)
+        ));
+        assert_eq!(
+            names(&vol.readdir(INO_ROOT, 0).unwrap()),
+            [".", "..", "Readme.TXT"]
+        );
+
+        // Changing only the case renames the entry in place.
+        vol.rename(INO_ROOT, "readme.txt", INO_ROOT, "README.TXT")
+            .unwrap();
+        assert_eq!(
+            names(&vol.readdir(INO_ROOT, 0).unwrap()),
+            [".", "..", "README.TXT"]
+        );
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "Readme.txt"), f);
+        vol.unlink(INO_ROOT, "readme.TXT").unwrap();
+        assert_eq!(names(&vol.readdir(INO_ROOT, 0).unwrap()), [".", ".."]);
+    }
+
+    #[test]
+    fn names_are_stored_in_nfc() {
+        let mut vol = rw(4096, 8 * MIB);
+        let decomposed = "cafe\u{301}";
+        let f = vol.create(INO_ROOT, decomposed, 0o644, 0, 0).unwrap().ino;
+        assert_eq!(names(&vol.readdir(INO_ROOT, 0).unwrap())[2], "caf\u{e9}");
+        assert_eq!(ino_of(&mut vol, INO_ROOT, "caf\u{e9}"), f);
+        assert_eq!(ino_of(&mut vol, INO_ROOT, decomposed), f);
+        // Without CASEFOLD, case matters.
+        assert!(matches!(
+            vol.lookup(INO_ROOT, "CAFÉ"),
+            Err(DadaError::NotFound)
+        ));
+        vol.create(INO_ROOT, "CAFÉ", 0o644, 0, 0).unwrap();
+        assert!(matches!(
+            vol.create(INO_ROOT, decomposed, 0o644, 0, 0),
+            Err(DadaError::Exists)
+        ));
     }
 }

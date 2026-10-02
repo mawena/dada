@@ -197,6 +197,21 @@ impl DirBlock {
         Ok(true)
     }
 
+    /// Points the used entry at byte `offset` to another inode, keeping its name.
+    pub fn set_target(&mut self, offset: usize, ino: u64, kind: FileKind) -> Result<(), DadaError> {
+        if ino == 0 {
+            return Err(DadaError::Invalid);
+        }
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|s| s.offset == offset && s.ino != 0)
+            .ok_or(DadaError::NotFound)?;
+        slot.ino = ino;
+        slot.kind = Some(kind);
+        Ok(())
+    }
+
     /// Removes the used entry at byte `offset`: it is merged into the
     /// previous entry, or becomes a free slot if it is the first one.
     pub fn remove(&mut self, offset: usize) -> Result<(), DadaError> {
@@ -289,6 +304,23 @@ mod tests {
         assert!(b.insert(5, FileKind::Directory, "dir").unwrap());
         assert_eq!(b.slots()[0].name, "dir");
         assert!(b.remove(3).is_err());
+    }
+
+    #[test]
+    fn retarget_entry() {
+        let mut b = DirBlock::empty(1024).unwrap();
+        b.insert(1, FileKind::Directory, ".").unwrap();
+        b.insert(20, FileKind::RegularFile, "x").unwrap();
+        let off = b.slots()[1].offset;
+        b.set_target(off, 30, FileKind::Directory).unwrap();
+        let parsed = DirBlock::parse(&b.encode()).unwrap();
+        let x = parsed.entries().nth(1).unwrap();
+        assert_eq!(
+            (x.ino, x.kind, x.name.as_str()),
+            (30, Some(FileKind::Directory), "x")
+        );
+        assert!(b.set_target(off + 8, 30, FileKind::Directory).is_err());
+        assert!(b.set_target(off, 0, FileKind::Directory).is_err());
     }
 
     #[test]
