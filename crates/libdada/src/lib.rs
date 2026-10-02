@@ -18,7 +18,32 @@ pub mod crc;
 pub mod device;
 pub mod error;
 pub mod format;
+pub mod layout;
 
 pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
 pub use format::FORMAT_VERSION;
+
+/// Parameters of `format`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatOptions {
+    pub block_size: u32,
+    /// One inode per `inode_ratio` bytes of volume.
+    pub inode_ratio: u64,
+    /// At most `format::LABEL_LEN` bytes of UTF-8.
+    pub label: String,
+    pub casefold: bool,
+    pub journal: bool,
+}
+
+impl Default for FormatOptions {
+    fn default() -> Self {
+        FormatOptions {
+            block_size: format::DEFAULT_BLOCK_SIZE,
+            inode_ratio: format::DEFAULT_INODE_RATIO,
+            label: String::new(),
+            casefold: false,
+            journal: true,
+        }
+    }
+}
