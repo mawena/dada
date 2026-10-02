@@ -175,3 +175,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: ignored tests (release)
         run: cargo test --release --workspace -- --ignored --nocapture
+
+  fuzz:
+    name: fuzz (short)
+    # A few minutes per target on main and on demand; long runs are manual.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz
+      - name: run every target
+        working-directory: fuzz
+        run: |
+          for t in superblock_decode inode_decode dir_block_parse open_image; do
+            mkdir -p corpus/$t
+            cargo fuzz run -O $t corpus/$t seeds/$t -- -max_total_time=180
+          done
