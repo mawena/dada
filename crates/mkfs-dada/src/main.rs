@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use libdada::format::{DEFAULT_BLOCK_SIZE, DEFAULT_INODE_RATIO, LABEL_LEN};
-use libdada::{format, BlockDevice, DadaError, FileDevice, FormatOptions, Volume};
+use libdada::{format, BlockDevice, DadaError, FileDevice, FormatOptions, SetAttr, Volume};
 
 /// Bytes inspected at the start and at the end of the target to decide
 /// whether it is empty.
@@ -39,6 +39,10 @@ struct Args {
     /// Overwrite a non-empty target, or format a device path
     #[arg(long)]
     force: bool,
+    /// Owner of the root directory, as UID:GID (default: the owner of the
+    /// target on Unix, 0:0 elsewhere)
+    #[arg(long, value_name = "UID:GID", value_parser = parse_owner)]
+    root_owner: Option<(u32, u32)>,
     /// Image file or device to format (an image file must already exist with its final size)
     target: PathBuf,
 }
@@ -51,6 +55,23 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn parse_owner(s: &str) -> Result<(u32, u32), String> {
+    let (uid, gid) = s.split_once(':').ok_or("expected UID:GID")?;
+    let parse = |v: &str| v.parse::<u32>().map_err(|_| format!("invalid id {v:?}"));
+    Ok((parse(uid)?, parse(gid)?))
+}
+
+#[cfg(unix)]
+fn file_owner(file: &File) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().map_or((0, 0), |m| (m.uid(), m.gid()))
+}
+
+#[cfg(not(unix))]
+fn file_owner(_file: &File) -> (u32, u32) {
+    (0, 0)
 }
 
 /// Paths that name a raw device rather than an image file.
@@ -124,6 +145,7 @@ fn run(args: &Args) -> Result<(), String> {
         ));
     }
 
+    let owner = args.root_owner.unwrap_or_else(|| file_owner(&file));
     let mut dev = FileDevice::from_file(file, opts.block_size, true)
         .map_err(|e| format!("cannot use {target}: {e}"))?;
     format(&mut dev, &opts).map_err(|e| match e {
@@ -135,7 +157,17 @@ fn run(args: &Args) -> Result<(), String> {
         e => format!("formatting {target} failed: {e}"),
     })?;
 
-    let vol = Volume::open(dev, true).map_err(|e| format!("cannot reopen {target}: {e}"))?;
+    let mut vol = Volume::open(dev, false).map_err(|e| format!("cannot reopen {target}: {e}"))?;
+    if owner != (0, 0) {
+        let changes = SetAttr {
+            uid: Some(owner.0),
+            gid: Some(owner.1),
+            ..SetAttr::default()
+        };
+        let root = vol.root();
+        vol.setattr(root, &changes)
+            .map_err(|e| format!("cannot set the root owner: {e}"))?;
+    }
     let sb = vol.superblock();
     let st = vol.statfs();
     println!("formatted {target}");
@@ -155,6 +187,9 @@ fn run(args: &Args) -> Result<(), String> {
     if args.casefold {
         println!("  casefold     on");
     }
+    println!("  root owner   {}:{}", owner.0, owner.1);
+    vol.close()
+        .map_err(|e| format!("closing {target} failed: {e}"))?;
     Ok(())
 }
 
@@ -162,6 +197,13 @@ fn run(args: &Args) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn owners() {
+        assert_eq!(parse_owner("1000:100").unwrap(), (1000, 100));
+        assert!(parse_owner("1000").is_err());
+        assert!(parse_owner("a:b").is_err());
+    }
 
     #[test]
     fn device_paths() {
