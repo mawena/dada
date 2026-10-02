@@ -25,6 +25,7 @@ pub mod format;
 pub mod inode;
 pub mod layout;
 mod le;
+pub mod name;
 pub mod superblock;
 pub mod volume;
 
