@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+name = "dada_fuse"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dada-fuse"
 path = "src/main.rs"
@@ -17,9 +21,12 @@ fuser = { version = "0.18.0", default-features = false, optional = true }
 libdada.workspace = true
 log = "0.4.34"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["fs", "mount", "user"], optional = true }
+
 [features]
 # The FUSE adapter. Off by default so that the workspace builds everywhere;
 # on Linux it mounts through fusermount3 and needs no libfuse headers.
-fuse = ["dep:fuser"]
+fuse = ["dep:fuser", "dep:nix"]
 # macOS: link against libfuse from macFUSE or FUSE-T.
 macos = ["fuse", "fuser/libfuse"]
