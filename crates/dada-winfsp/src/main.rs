@@ -94,7 +94,12 @@ fn run(args: &Args) -> Result<(), String> {
         args.mountpoint
     );
     let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
+    if matches!(std::io::stdin().read_line(&mut line), Ok(0) | Err(_)) {
+        // No console (service, CI): stay mounted until the process is stopped.
+        loop {
+            std::thread::park();
+        }
+    }
     host.stop();
     host.unmount();
     drop(host);
