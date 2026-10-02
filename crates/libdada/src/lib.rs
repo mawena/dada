@@ -14,6 +14,7 @@
     )
 )]
 
+pub mod bitmap;
 pub mod crc;
 pub mod device;
 pub mod error;

@@ -104,6 +104,97 @@ pub const COMPAT_XATTR: u64 = 1 << 0;
 /// `features_compat`: Windows attributes are populated.
 pub const COMPAT_WIN_ATTRS: u64 = 1 << 1;
 
+// ---------------------------------------------------------------------------
+// Bitmaps (SPEC 4.3)
+// ---------------------------------------------------------------------------
+
+/// Inodes 0 to `RESERVED_INODES - 1` are always marked used.
+pub const RESERVED_INODES: u64 = FIRST_USER_INO;
+
+// ---------------------------------------------------------------------------
+// Inode (SPEC 4.5)
+// ---------------------------------------------------------------------------
+
+/// Byte offsets of the inode fields.
+pub mod ino {
+    pub const MODE: usize = 0;
+    pub const UID: usize = 4;
+    pub const GID: usize = 8;
+    pub const WIN_ATTRS: usize = 12;
+    pub const SIZE: usize = 16;
+    pub const LINKS: usize = 24;
+    pub const FLAGS: usize = 28;
+    pub const ATIME: usize = 32;
+    pub const MTIME: usize = 40;
+    pub const CTIME: usize = 48;
+    pub const BTIME: usize = 56;
+    pub const EXTENT_COUNT: usize = 64;
+    /// Four inline extents, or inline data.
+    pub const EXTENTS: usize = 72;
+    pub const EXTENT_BLOCK: usize = 168;
+    pub const XATTR_BLOCK: usize = 176;
+    pub const GENERATION: usize = 184;
+    /// The checksum covers the inode number (u64 LE) followed by bytes `0..CHECKSUM`.
+    pub const CHECKSUM: usize = 252;
+}
+
+/// Inode flag: content is stored inline in the extents area.
+pub const INODE_FLAG_INLINE_DATA: u32 = 1 << 0;
+/// All inode flags understood by this implementation.
+pub const INODE_FLAGS_SUPPORTED: u32 = INODE_FLAG_INLINE_DATA;
+/// Maximum size of inline content.
+pub const INLINE_DATA_MAX: usize = 96;
+/// Number of extents stored in the inode itself.
+pub const INODE_INLINE_EXTENTS: usize = 4;
+
+/// File type is `mode >> MODE_TYPE_SHIFT`.
+pub const MODE_TYPE_SHIFT: u32 = 12;
+pub const MODE_TYPE_DIR: u32 = 0x4;
+pub const MODE_TYPE_REGULAR: u32 = 0x8;
+pub const MODE_TYPE_SYMLINK: u32 = 0xA;
+/// POSIX permission bits (including setuid, setgid, sticky).
+pub const MODE_PERM_MASK: u32 = 0o7777;
+
+pub const WIN_ATTR_READONLY: u32 = 1 << 0;
+pub const WIN_ATTR_HIDDEN: u32 = 1 << 1;
+pub const WIN_ATTR_SYSTEM: u32 = 1 << 2;
+pub const WIN_ATTR_ARCHIVE: u32 = 1 << 5;
+
+// ---------------------------------------------------------------------------
+// Extent (SPEC 4.6)
+// ---------------------------------------------------------------------------
+
+pub const EXTENT_SIZE: usize = 24;
+
+/// Byte offsets of the extent fields.
+pub mod ext {
+    pub const LOGICAL: usize = 0;
+    pub const PHYSICAL: usize = 8;
+    pub const LENGTH: usize = 16;
+}
+
+// ---------------------------------------------------------------------------
+// Directories (SPEC 4.8)
+// ---------------------------------------------------------------------------
+
+/// Bytes at the end of a directory block: CRC32C (4) then reserved (4).
+pub const DIR_BLOCK_TAIL: usize = 8;
+/// Directory entries are aligned on this many bytes.
+pub const DIR_ENTRY_ALIGN: usize = 8;
+
+/// Byte offsets of the directory entry fields.
+pub mod dirent {
+    pub const INODE: usize = 0;
+    pub const REC_LEN: usize = 8;
+    pub const NAME_LEN: usize = 10;
+    pub const FILE_TYPE: usize = 11;
+    pub const NAME: usize = 12;
+}
+
+pub const FT_REGULAR: u8 = 1;
+pub const FT_DIR: u8 = 2;
+pub const FT_SYMLINK: u8 = 7;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +215,17 @@ mod tests {
         assert_eq!(sb::CHECKSUM + 4, SUPERBLOCK_SIZE);
         assert_eq!(sb::LABEL + LABEL_LEN, sb::CREATED_NS);
         assert_eq!(sb::UUID + UUID_LEN, sb::FEATURES_COMPAT);
+    }
+
+    #[test]
+    fn inode_offsets_fit() {
+        assert_eq!(
+            ino::EXTENTS + INODE_INLINE_EXTENTS * EXTENT_SIZE,
+            ino::EXTENT_BLOCK
+        );
+        assert_eq!(ino::EXTENTS + INLINE_DATA_MAX, ino::EXTENT_BLOCK);
+        assert_eq!(ino::GENERATION + 4 + 64, ino::CHECKSUM);
+        assert_eq!(ino::CHECKSUM + 4, INODE_SIZE as usize);
+        assert_eq!(ext::LENGTH + 8, EXTENT_SIZE);
     }
 }
