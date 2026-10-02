@@ -77,6 +77,92 @@ jobs:
       - name: build
         run: cargo build -p dada-fuse --features macos
 
+  winfsp:
+    name: WinFsp (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: install WinFsp
+        run: choco install winfsp -y
+      - name: clippy (winfsp feature)
+        run: cargo clippy -p dada-winfsp --features winfsp --all-targets -- -D warnings
+      - name: build
+        run: cargo build --release -p dada-winfsp --features winfsp
+
+  crossos-make:
+    name: cross-OS image (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: make image
+        run: cargo run --release -p dada-tests --bin dada-crossos -- make cross-${{ matrix.os }}.img
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-${{ matrix.os }}
+          path: cross-${{ matrix.os }}.img
+
+  crossos-verify:
+    name: cross-OS check (${{ matrix.os }})
+    needs: crossos-make
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-*
+          merge-multiple: true
+      - name: read every image with libdada
+        shell: bash
+        run: |
+          cargo build --release -p dada-tests --bin dada-crossos
+          for img in cross-*.img; do
+            echo "== $img"
+            target/release/dada-crossos verify "$img"
+          done
+      - name: read every image through FUSE
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y fuse3
+          cargo build --release -p dada-fuse --features fuse
+          for img in cross-*.img; do
+            mkdir -p "mnt-$img"
+            target/release/dada-fuse -o ro "$img" "mnt-$img" &
+            sleep 2
+            target/release/dada-crossos verify-dir "mnt-$img"
+            fusermount3 -u "mnt-$img"
+          done
+      - name: read every image through WinFsp
+        if: runner.os == 'Windows'
+        # Mounting needs the WinFsp driver on the runner: not blocking yet.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install winfsp -y
+          cargo build --release -p dada-winfsp --features winfsp
+          New-Item -ItemType File -Force empty.txt | Out-Null
+          foreach ($img in Get-ChildItem cross-*.img) {
+            $p = Start-Process -FilePath target\release\dada-winfsp.exe -ArgumentList "--read-only", $img.FullName, "X:" -PassThru -RedirectStandardInput empty.txt
+            Start-Sleep -Seconds 5
+            target\release\dada-crossos.exe verify-dir --windows-names X:\
+            Stop-Process -Id $p.Id
+            Start-Sleep -Seconds 2
+          }
+
   long-tests:
     name: long tests (ignored)
     # Several GiB of I/O: only on main and on demand.
