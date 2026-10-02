@@ -263,3 +263,20 @@ incomplète ou invalide. Puis `head = tail`, `state = 0`.
 
 Une transaction ne doit jamais dépasser `journal_blocks - 2` blocs. Si une
 opération en nécessite plus, la découper ou retourner `DadaError::NoSpace`.
+
+Précisions d'implémentation (v1) :
+
+- Les champs des blocs de transaction se suivent sans alignement. Descripteur :
+  magic à 0, `seq` à 4, `count` à 12, adresses à partir de 16. Commit : magic
+  à 0, `seq` à 4, CRC des données à 12. Le checksum de chaque bloc du journal
+  (en-tête, descripteur, commit) est le CRC32C des octets `0 .. bs - 4`, stocké
+  à `bs - 4`.
+- Le CRC du commit couvre le bloc descripteur entier (checksum compris), puis
+  chaque bloc de données, dans l'ordre.
+- Une transaction compte `count + 2` blocs ; la limite de `journal_blocks - 2`
+  blocs donne donc `count <= journal_blocks - 4`, borné aussi par la capacité
+  d'un descripteur, `(bs - 20) / 8` adresses.
+- Le formatage écrit l'en-tête (`sequence = 1`, `head = tail = 1`) et met à 0
+  le bloc 1 du journal, pour qu'aucun reste d'un ancien contenu ne soit rejoué.
+- Une transaction contient tous les blocs de métadonnées modifiés depuis la
+  précédente, superbloc (bloc 0) et blocs de bitmap compris.
