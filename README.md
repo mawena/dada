@@ -185,4 +185,4 @@ cd fuzz && cargo +nightly fuzz run open_image          # fuzzing (cargo install 
 
 Random tests print their seed; replay a failure with `DADA_SEED=<seed>`.
 `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass before
-every commit. The implementation brief is [CLAUDE.md](CLAUDE.md).
+every commit.
