@@ -28,3 +28,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      - name: smoke test (mkfs-dada, dadactl)
+        shell: bash
+        run: |
+          cargo build --workspace
+          img="$RUNNER_TEMP/t.img"
+          py=$(command -v python3 || command -v python)
+          "$py" -c "import sys; open(sys.argv[1], 'wb').truncate(100 << 20)" "$img"
+          target/debug/mkfs-dada --label TEST "$img"
+          target/debug/dadactl info "$img"
+          target/debug/dadactl ls "$img" /
