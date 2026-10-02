@@ -6,6 +6,8 @@
 //! compared with what is on disk. Inodes that no directory references are
 //! attached to `/lost+found`.
 
+pub mod cli;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use libdada::bitmap::Bitmap;
