@@ -19,6 +19,8 @@ pub mod device;
 pub mod error;
 pub mod format;
 pub mod layout;
+mod le;
+pub mod superblock;
 
 pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
