@@ -1,11 +1,10 @@
-//! mkfs-dada: formats an image file or a device with the dada filesystem.
+//! Formatting of an image file or a device, shared by `mkfs-dada` and the
+//! `dada` command.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-use clap::Parser;
 use libdada::format::{DEFAULT_BLOCK_SIZE, DEFAULT_INODE_RATIO, LABEL_LEN};
 use libdada::{format, BlockDevice, DadaError, FileDevice, FormatOptions, SetAttr, Volume};
 
@@ -14,47 +13,33 @@ use libdada::{format, BlockDevice, DadaError, FileDevice, FormatOptions, SetAttr
 const PROBE_HEAD: u64 = 1 << 20;
 const PROBE_TAIL: u64 = 64 << 10;
 
-#[derive(Parser)]
-#[command(
-    name = "mkfs-dada",
-    version,
-    about = "Format an image file or a device with the dada filesystem"
-)]
-struct Args {
+/// Formatting options.
+#[derive(clap::Args, Debug)]
+pub struct FormatArgs {
     /// Block size in bytes: a power of two from 1024 to 65536
     #[arg(long, default_value_t = DEFAULT_BLOCK_SIZE)]
-    block_size: u32,
+    pub block_size: u32,
     /// Volume label, at most 32 bytes of UTF-8
     #[arg(long, default_value = "")]
-    label: String,
+    pub label: String,
     /// Compare names without regard to case
     #[arg(long)]
-    casefold: bool,
+    pub casefold: bool,
     /// Do not create a metadata journal
     #[arg(long)]
-    no_journal: bool,
+    pub no_journal: bool,
     /// Bytes of volume per inode
     #[arg(long, default_value_t = DEFAULT_INODE_RATIO)]
-    inode_ratio: u64,
+    pub inode_ratio: u64,
     /// Overwrite a non-empty target, or format a device path
     #[arg(long)]
-    force: bool,
-    /// Owner of the root directory, as UID:GID (default: the owner of the
-    /// target on Unix, 0:0 elsewhere)
+    pub force: bool,
+    /// Owner of the root directory, as UID:GID (default: the user who ran
+    /// sudo, else the owner of the target on Unix, 0:0 elsewhere)
     #[arg(long, value_name = "UID:GID", value_parser = parse_owner)]
-    root_owner: Option<(u32, u32)>,
+    pub root_owner: Option<(u32, u32)>,
     /// Image file or device to format (an image file must already exist with its final size)
-    target: PathBuf,
-}
-
-fn main() -> ExitCode {
-    match run(&Args::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("mkfs-dada: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    pub target: PathBuf,
 }
 
 fn parse_owner(s: &str) -> Result<(u32, u32), String> {
@@ -74,8 +59,14 @@ fn file_owner(_file: &File) -> (u32, u32) {
     (0, 0)
 }
 
+/// The user who ran `sudo`, if any.
+fn sudo_owner() -> Option<(u32, u32)> {
+    let id = |name| std::env::var(name).ok()?.parse::<u32>().ok();
+    Some((id("SUDO_UID")?, id("SUDO_GID")?))
+}
+
 /// Paths that name a raw device rather than an image file.
-fn is_device_path(path: &Path) -> bool {
+pub fn is_device_path(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.starts_with("/dev/") || s.starts_with(r"\\.\")
 }
@@ -105,9 +96,14 @@ fn looks_empty(file: &mut File) -> std::io::Result<bool> {
     Ok(true)
 }
 
-fn run(args: &Args) -> Result<(), String> {
+/// Formats `args.target`. Without `--force`, a device path or a target
+/// holding data is formatted only if `confirm` (given a question) agrees.
+pub fn run(args: &FormatArgs, confirm: &mut dyn FnMut(&str) -> bool) -> Result<(), String> {
     let target = args.target.display();
-    if is_device_path(&args.target) && !args.force {
+    if is_device_path(&args.target)
+        && !args.force
+        && !confirm(&format!("{target} is a device: erase everything on it?"))
+    {
         return Err(format!(
             "{target} looks like a device; use --force to format it"
         ));
@@ -139,13 +135,21 @@ fn run(args: &Args) -> Result<(), String> {
         .write(true)
         .open(&args.target)
         .map_err(|e| format!("cannot open {target}: {e}"))?;
-    if !args.force && !looks_empty(&mut file).map_err(|e| format!("cannot read {target}: {e}"))? {
+    // A device was already confirmed above.
+    if !args.force
+        && !is_device_path(&args.target)
+        && !looks_empty(&mut file).map_err(|e| format!("cannot read {target}: {e}"))?
+        && !confirm(&format!("{target} holds data: overwrite it?"))
+    {
         return Err(format!(
             "{target} is not empty; use --force to overwrite its content"
         ));
     }
 
-    let owner = args.root_owner.unwrap_or_else(|| file_owner(&file));
+    let owner = args
+        .root_owner
+        .or_else(sudo_owner)
+        .unwrap_or_else(|| file_owner(&file));
     let mut dev = FileDevice::from_file(file, opts.block_size, true)
         .map_err(|e| format!("cannot use {target}: {e}"))?;
     format(&mut dev, &opts).map_err(|e| match e {

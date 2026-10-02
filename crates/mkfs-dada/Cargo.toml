@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+name = "mkfs_dada"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mkfs-dada"
 path = "src/main.rs"
