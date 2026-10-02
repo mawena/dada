@@ -4,7 +4,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::format::is_valid_block_size;
+use crate::format::{
+    is_valid_block_size, DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, SUPERBLOCK_SIZE,
+};
+use crate::superblock::Superblock;
 use crate::DadaError;
 
 /// Storage addressed by fixed-size blocks.
@@ -118,12 +121,23 @@ impl FileDevice {
         Self::from_file(file, block_size, writable)
     }
 
+    /// Opens an existing dada image, using the block size recorded in its
+    /// primary superblock, or in its backup superblock if the primary is
+    /// unreadable. Falls back to the default block size when neither is
+    /// found, so that `Volume::open` reports the actual problem.
+    pub fn open_image(path: &Path, writable: bool) -> Result<Self, DadaError> {
+        let mut file = OpenOptions::new().read(true).write(writable).open(path)?;
+        let block_size = detect_block_size(&mut file).unwrap_or(DEFAULT_BLOCK_SIZE);
+        Self::from_file(file, block_size, writable)
+    }
+
     /// Wraps an already opened file; `writable` must match how it was opened.
-    pub fn from_file(file: File, block_size: u32, writable: bool) -> Result<Self, DadaError> {
+    pub fn from_file(mut file: File, block_size: u32, writable: bool) -> Result<Self, DadaError> {
         if !is_valid_block_size(block_size) {
             return Err(DadaError::Invalid);
         }
-        let block_count = file.metadata()?.len() / u64::from(block_size);
+        // Seeking to the end also gives the size of a block device.
+        let block_count = file.seek(SeekFrom::End(0))? / u64::from(block_size);
         Ok(FileDevice {
             file,
             block_size,
@@ -131,6 +145,30 @@ impl FileDevice {
             writable,
         })
     }
+}
+
+fn read_superblock_at(file: &mut File, offset: u64) -> Option<Superblock> {
+    let mut buf = [0u8; SUPERBLOCK_SIZE];
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    file.read_exact(&mut buf).ok()?;
+    Superblock::decode(&buf).ok()
+}
+
+fn detect_block_size(file: &mut File) -> Option<u32> {
+    if let Some(sb) = read_superblock_at(file, 0) {
+        if is_valid_block_size(sb.block_size) {
+            return Some(sb.block_size);
+        }
+    }
+    let len = file.seek(SeekFrom::End(0)).ok()?;
+    (MIN_BLOCK_SIZE.trailing_zeros()..=MAX_BLOCK_SIZE.trailing_zeros())
+        .map(|shift| 1u32 << shift)
+        .find(|&bs| {
+            let blocks = len / u64::from(bs);
+            blocks >= 2
+                && read_superblock_at(file, (blocks - 1) * u64::from(bs))
+                    .is_some_and(|sb| sb.block_size == bs)
+        })
 }
 
 impl BlockDevice for FileDevice {
@@ -250,5 +288,41 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = FileDevice::open(&dir.path().join("absent.img"), 4096, false).unwrap_err();
         assert!(matches!(err, DadaError::Io(_)));
+    }
+
+    #[test]
+    fn open_image_detects_block_size() {
+        let dir = tempfile::tempdir().unwrap();
+        for bs in [1024, 4096, 65536] {
+            let path = dir.path().join(format!("{bs}.img"));
+            File::create(&path).unwrap().set_len(8 << 20).unwrap();
+            let mut dev = FileDevice::open(&path, bs, true).unwrap();
+            let opts = crate::FormatOptions {
+                block_size: bs,
+                journal: false,
+                ..Default::default()
+            };
+            crate::format(&mut dev, &opts).unwrap();
+            drop(dev);
+            assert_eq!(
+                FileDevice::open_image(&path, false).unwrap().block_size(),
+                bs
+            );
+
+            // Primary superblock destroyed: the backup gives the block size.
+            let mut dev = FileDevice::open(&path, bs, true).unwrap();
+            dev.write_block(0, &vec![0; bs as usize]).unwrap();
+            drop(dev);
+            assert_eq!(
+                FileDevice::open_image(&path, false).unwrap().block_size(),
+                bs
+            );
+        }
+
+        // Not a dada image: default block size.
+        let path = dir.path().join("zero.img");
+        File::create(&path).unwrap().set_len(1 << 20).unwrap();
+        let dev = FileDevice::open_image(&path, false).unwrap();
+        assert_eq!(dev.block_size(), DEFAULT_BLOCK_SIZE);
     }
 }
