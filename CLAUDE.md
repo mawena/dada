@@ -80,8 +80,8 @@ dada/
 │   │       ├── journal.rs
 │   │       ├── cache.rs       # cache de blocs simple
 │   │       └── volume.rs      # opérations de haut niveau
-│   ├── mkfs-dada/             # binaire mkfs.dada
-│   ├── fsck-dada/             # binaire fsck.dada
+│   ├── mkfs-dada/             # binaire mkfs-dada
+│   ├── fsck-dada/             # binaire fsck-dada
 │   ├── dadactl/               # binaire dadactl (debug)
 │   ├── dada-fuse/             # adaptateur Linux / macOS
 │   └── dada-winfsp/           # adaptateur Windows
@@ -231,9 +231,15 @@ Sémantique attendue :
 
 ### 6.1 Outils CLI
 
+Les outils se nomment `mkfs-dada` et `fsck-dada` (et non `mkfs.dada` /
+`fsck.dada`) : Cargo refuse le caractère `.` dans un nom de binaire. Le nom
+est le même sur les trois OS. Conséquence : `mkfs -t dada` et `fsck -t dada`
+sous Linux ne trouvent pas ces outils automatiquement ; il faut les appeler
+directement.
+
 ```
-mkfs.dada [--block-size N] [--label L] [--casefold] [--no-journal] [--inode-ratio N] <image|périphérique>
-fsck.dada [--repair] [--verbose] <image>
+mkfs-dada [--block-size N] [--label L] [--casefold] [--no-journal] [--inode-ratio N] <image|périphérique>
+fsck-dada [--repair] [--verbose] <image>
 dadactl info  <image>
 dadactl ls    <image> <chemin>
 dadactl cat   <image> <chemin>
@@ -245,11 +251,11 @@ dadactl rm    <image> <chemin>
 dadactl dump  <image> superblock|inode <n>|block <n>
 ```
 
-mkfs.dada refuse un fichier ou périphérique existant non vide sauf avec
+mkfs-dada refuse un fichier ou périphérique existant non vide sauf avec
 `--force`, et refuse toujours un chemin commençant par `/dev/` ou `\\.\` sans
 `--force`.
 
-fsck.dada vérifie, et répare avec `--repair` :
+fsck-dada vérifie, et répare avec `--repair` :
 
 - superbloc (restauration depuis le secours si nécessaire) ;
 - rejeu du journal ;
@@ -316,12 +322,12 @@ Critère : `cargo test -p libdada` vert, tests de propriétés (proptest) sur l'
 - bitmap.rs, inode.rs, dir.rs (lecture + écriture d'un bloc).
 - `format()` complet : racine avec `.` et `..`, inode 2 décrivant le journal si présent, superbloc principal + secours.
 - `Volume::open`, `getattr`, `readdir`, `statfs`.
-- mkfs.dada, dadactl info, dadactl ls, dadactl dump.
+- mkfs-dada, dadactl info, dadactl ls, dadactl dump.
 
 Critère :
 
 ```
-truncate -s 100M t.img && mkfs.dada --label TEST t.img && dadactl info t.img && dadactl ls t.img /
+truncate -s 100M t.img && mkfs-dada --label TEST t.img && dadactl info t.img && dadactl ls t.img /
 ```
 
 affiche le label, les compteurs cohérents, et `.` `..`.
@@ -345,10 +351,10 @@ Critère : test qui fragmente volontairement le volume (créer/supprimer en alte
 
 ### Jalon 5 — fsck
 
-- fsck.dada complet (section 6.1).
+- fsck-dada complet (section 6.1).
 - Tests qui corrompent volontairement une image (octets aléatoires dans les métadonnées, bitmaps faussées, compteurs faux, inode orphelin) et vérifient la détection et la réparation.
 
-Critère : après `fsck.dada --repair`, une seconde exécution retourne 0 et l'image se monte.
+Critère : après `fsck-dada --repair`, une seconde exécution retourne 0 et l'image se monte.
 
 ### Jalon 6 — Journal
 
@@ -356,7 +362,7 @@ Critère : après `fsck.dada --repair`, une seconde exécution retourne 0 et l'i
 - Toutes les opérations de métadonnées passent par le journal quand JOURNAL est actif.
 - FaultyDevice et test de coupure.
 
-Critère : boucle de 1 000 itérations : formater, lancer une charge aléatoire, couper après un nombre aléatoire d'écritures, remonter (rejeu), puis fsck.dada doit retourner 0 à chaque fois. Les fichiers dont l'opération a été validée (sync retourné avant la coupure) sont intacts.
+Critère : boucle de 1 000 itérations : formater, lancer une charge aléatoire, couper après un nombre aléatoire d'écritures, remonter (rejeu), puis fsck-dada doit retourner 0 à chaque fois. Les fichiers dont l'opération a été validée (sync retourné avant la coupure) sont intacts.
 
 ### Jalon 7 — dada-fuse
 

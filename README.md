@@ -10,6 +10,11 @@ readable and writable from Linux, macOS and Windows.
 
 The on-disk format is specified in [SPEC.md](SPEC.md).
 
+The tools are named `mkfs-dada` and `fsck-dada` (with a hyphen, not
+`mkfs.dada` / `fsck.dada`), because Cargo does not allow `.` in binary names.
+As a result, `mkfs -t dada` and `fsck -t dada` on Linux do not find them:
+call them directly.
+
 Status: under development (milestone 0).
 
 ## Build

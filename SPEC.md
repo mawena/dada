@@ -105,7 +105,7 @@ Règles de validation à l'ouverture : magic correct, version = 1, checksum
 valide, block_size valide, toutes les zones à l'intérieur du volume et dans le
 bon ordre, root_inode = 1, free_* <= total. Si le superbloc principal est
 invalide et que le secours est valide, `Volume::open` échoue avec une erreur
-explicite suggérant `fsck.dada` (seul fsck répare).
+explicite suggérant `fsck-dada` (seul fsck répare).
 
 ## 4.5 Inode (256 octets)
 
