@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 crc32c = "0.6.8"
 thiserror = "2.0.21"
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [dev-dependencies]
 proptest = "1.11.0"

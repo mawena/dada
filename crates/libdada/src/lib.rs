@@ -25,10 +25,13 @@ pub mod inode;
 pub mod layout;
 mod le;
 pub mod superblock;
+pub mod volume;
 
 pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
 pub use format::FORMAT_VERSION;
+pub use inode::FileKind;
+pub use volume::{format, Attr, DirEntryInfo, Ino, StatFs, Volume};
 
 /// Parameters of `format`.
 #[derive(Debug, Clone, PartialEq, Eq)]
