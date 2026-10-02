@@ -15,8 +15,10 @@
 )]
 
 pub mod crc;
+pub mod device;
 pub mod error;
 pub mod format;
 
+pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
 pub use format::FORMAT_VERSION;
