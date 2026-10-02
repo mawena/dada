@@ -205,6 +205,73 @@ impl BlockDevice for FileDevice {
     }
 }
 
+/// Test device simulating a power cut: after `cut_after` writes, further
+/// writes are silently dropped and every flush fails.
+#[cfg(any(test, feature = "testing"))]
+pub struct FaultyDevice<D> {
+    inner: D,
+    cut_after: u64,
+    writes: u64,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<D: BlockDevice> FaultyDevice<D> {
+    pub fn new(inner: D, cut_after: u64) -> Self {
+        FaultyDevice {
+            inner,
+            cut_after,
+            writes: 0,
+        }
+    }
+
+    /// Writes attempted so far, dropped ones included.
+    pub fn writes(&self) -> u64 {
+        self.writes
+    }
+
+    pub fn is_cut(&self) -> bool {
+        self.writes > self.cut_after
+    }
+
+    pub fn into_inner(self) -> D {
+        self.inner
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<D: BlockDevice> BlockDevice for FaultyDevice<D> {
+    fn block_size(&self) -> u32 {
+        self.inner.block_size()
+    }
+
+    fn block_count(&self) -> u64 {
+        self.inner.block_count()
+    }
+
+    fn read_block(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), DadaError> {
+        self.inner.read_block(lba, buf)
+    }
+
+    fn write_block(&mut self, lba: u64, buf: &[u8]) -> Result<(), DadaError> {
+        self.writes += 1;
+        if self.writes > self.cut_after {
+            // Validate the request like a real write would, then drop it.
+            if buf.len() != self.block_size() as usize || lba >= self.block_count() {
+                return Err(DadaError::Invalid);
+            }
+            return Ok(());
+        }
+        self.inner.write_block(lba, buf)
+    }
+
+    fn flush(&mut self) -> Result<(), DadaError> {
+        if self.is_cut() {
+            return Err(DadaError::Io(std::io::Error::other("simulated power cut")));
+        }
+        self.inner.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +355,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = FileDevice::open(&dir.path().join("absent.img"), 4096, false).unwrap_err();
         assert!(matches!(err, DadaError::Io(_)));
+    }
+
+    #[test]
+    fn faulty_device_drops_writes_after_the_cut() {
+        let mut dev = FaultyDevice::new(MemDevice::new(1024, 8).unwrap(), 2);
+        for lba in 0..4 {
+            dev.write_block(lba, &[lba as u8 + 1; 1024]).unwrap();
+            if lba == 1 {
+                dev.flush().unwrap();
+            }
+        }
+        assert!(dev.is_cut());
+        assert!(dev.flush().is_err());
+        assert_eq!(dev.writes(), 4);
+        let mem = dev.into_inner();
+        assert_eq!(mem.as_bytes()[0], 1);
+        assert_eq!(mem.as_bytes()[1024], 2);
+        assert_eq!(mem.as_bytes()[2048], 0);
     }
 
     #[test]

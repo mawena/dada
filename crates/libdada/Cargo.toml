@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
+[features]
+# Test helpers (FaultyDevice) for the integration tests.
+testing = []
+
 [dependencies]
 caseless = "0.2.2"
 crc32c = "0.6.8"

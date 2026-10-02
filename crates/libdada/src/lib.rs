@@ -30,6 +30,8 @@ pub mod name;
 pub mod superblock;
 pub mod volume;
 
+#[cfg(any(test, feature = "testing"))]
+pub use device::FaultyDevice;
 pub use device::{BlockDevice, FileDevice, MemDevice};
 pub use error::DadaError;
 pub use format::FORMAT_VERSION;

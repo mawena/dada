@@ -1,6 +1,6 @@
 //! Formatting and high-level volume operations.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bitmap::Bitmap;
@@ -13,10 +13,11 @@ use crate::extent::{
 };
 use crate::format::{
     extent_block_capacity, COMPAT_WIN_ATTRS, FIRST_USER_INO, INCOMPAT_CASEFOLD,
-    INCOMPAT_EXTENT_BLOCKS, INLINE_DATA_MAX, INODE_INLINE_EXTENTS, INODE_SIZE, INO_JOURNAL,
-    INO_ROOT, MAX_NAME_LEN, MODE_PERM_MASK, RESERVED_INODES, STATE_CLEAN, STATE_DIRTY,
+    INCOMPAT_EXTENT_BLOCKS, INCOMPAT_JOURNAL, INLINE_DATA_MAX, INODE_INLINE_EXTENTS, INODE_SIZE,
+    INO_JOURNAL, INO_ROOT, MAX_NAME_LEN, MODE_PERM_MASK, RESERVED_INODES, STATE_CLEAN, STATE_DIRTY,
 };
 use crate::inode::{FileKind, Inode, InodeData};
+use crate::journal::{self, Journal};
 use crate::layout::Layout;
 use crate::le::put_bytes;
 use crate::name::{normalize, normalize_new, NameMatcher};
@@ -222,6 +223,10 @@ pub fn format<D: BlockDevice>(dev: &mut D, opts: &FormatOptions) -> Result<(), D
     sb.free_blocks = layout.total_blocks - blocks.count_used();
     sb.free_inodes = layout.inode_count - inodes.count_used();
 
+    if opts.journal {
+        journal::initialize(dev, &sb)?;
+    }
+
     // Backup first, primary last: the volume becomes valid only at the end.
     dev.write_block(layout.backup_superblock(), &superblock_block(&sb))?;
     dev.flush()?;
@@ -237,14 +242,25 @@ fn read_superblock<D: BlockDevice>(dev: &mut D, lba: u64) -> Result<Superblock, 
     Ok(sb)
 }
 
-fn load_bitmap<D: BlockDevice>(dev: &mut D, start: u64, bits: u64) -> Result<Bitmap, DadaError> {
+/// Reads a bitmap zone; blocks in `overlay` replace the device content.
+fn load_bitmap<D: BlockDevice>(
+    dev: &mut D,
+    overlay: &HashMap<u64, Vec<u8>>,
+    start: u64,
+    bits: u64,
+) -> Result<Bitmap, DadaError> {
     let bs = dev.block_size() as usize;
     let blocks = bitmap_blocks(bits, dev.block_size());
     let mut bytes = Vec::new();
     let mut buf = vec![0u8; bs];
     for i in 0..blocks {
-        dev.read_block(start + i, &mut buf)?;
-        bytes.extend_from_slice(&buf);
+        match overlay.get(&(start + i)) {
+            Some(data) => bytes.extend_from_slice(data),
+            None => {
+                dev.read_block(start + i, &mut buf)?;
+                bytes.extend_from_slice(&buf);
+            }
+        }
     }
     Bitmap::from_bytes(bytes, bits)
 }
@@ -280,6 +296,13 @@ pub struct Volume<D: BlockDevice> {
     /// Where the next allocation without a better goal starts.
     block_hint: u64,
     inode_hint: u64,
+    /// Present on a read-write volume with a journal.
+    journal: Option<Journal>,
+    /// Runs freed since the last commit. They stay marked used until then,
+    /// so that no file data overwrites a block the journal could bring back.
+    pending_free: Vec<(u64, u64)>,
+    /// Commit once this many metadata blocks are dirty.
+    commit_threshold: usize,
 }
 
 impl<D: BlockDevice> Volume<D> {
@@ -319,16 +342,50 @@ impl<D: BlockDevice> Volume<D> {
                 dev.block_count()
             )));
         }
-        let block_bitmap = load_bitmap(&mut dev, sb.block_bitmap_start, sb.total_blocks)?;
-        let inode_bitmap = load_bitmap(&mut dev, sb.inode_bitmap_start, sb.inode_count)?;
+        let has_journal = sb.features_incompat & INCOMPAT_JOURNAL != 0;
+        let mut sb = sb;
+        let mut overlay = HashMap::new();
+        if has_journal && sb.state == STATE_DIRTY {
+            let replay = journal::scan(&mut dev, &sb)?;
+            if read_only {
+                // Replayed in memory only.
+                overlay = replay.latest();
+                if let Some(block) = overlay.get(&0) {
+                    sb = Superblock::decode(block)?;
+                    sb.validate()?;
+                }
+            } else {
+                sb = journal::apply(&mut dev, &sb, &replay)?;
+            }
+        }
+        let block_bitmap = load_bitmap(&mut dev, &overlay, sb.block_bitmap_start, sb.total_blocks)?;
+        let inode_bitmap = load_bitmap(&mut dev, &overlay, sb.inode_bitmap_start, sb.inode_count)?;
+        let journal = if has_journal && !read_only {
+            Some(Journal::load(&mut dev, &sb)?)
+        } else {
+            None
+        };
+        let commit_threshold = match journal {
+            Some(_) => journal::max_targets(sb.block_size, sb.journal_blocks)
+                .saturating_sub(8)
+                .clamp(1, cache_blocks.max(1)),
+            None => cache_blocks.max(1),
+        };
+        let mut cache = BlockCache::new(cache_blocks);
+        for (lba, data) in overlay {
+            cache.pin(lba, data);
+        }
 
         let mut vol = Volume {
+            journal,
+            pending_free: Vec::new(),
+            commit_threshold,
             block_hint: sb.data_start,
             inode_hint: FIRST_USER_INO,
             dev,
             sb,
             read_only,
-            cache: BlockCache::new(cache_blocks),
+            cache,
             block_bitmap,
             inode_bitmap,
             dirty_block_bitmap: BTreeSet::new(),
@@ -352,7 +409,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Writes all pending metadata, marks the volume clean and returns the device.
     pub fn close(mut self) -> Result<D, DadaError> {
         if !self.read_only {
-            self.write_back()?;
+            self.commit()?;
             self.sb.state = STATE_CLEAN;
             let block = superblock_block(&self.sb);
             self.dev.write_block(self.sb.total_blocks - 1, &block)?;
@@ -362,20 +419,72 @@ impl<D: BlockDevice> Volume<D> {
         Ok(self.dev)
     }
 
+    /// Gives the device back without writing anything, as if the machine
+    /// stopped: changes since the last commit are lost and the volume stays
+    /// marked dirty.
+    pub fn into_device(self) -> D {
+        self.dev
+    }
+
     /// Writes all pending metadata and flushes the device. The volume stays
     /// marked dirty until `close`.
     pub fn sync(&mut self) -> Result<(), DadaError> {
         if self.read_only {
             return Ok(());
         }
-        self.write_back()?;
-        let block = superblock_block(&self.sb);
-        self.dev.write_block(0, &block)?;
-        self.dev.flush()
+        self.commit()
     }
 
-    /// Bitmaps and cached blocks to the device, then a device flush.
-    fn write_back(&mut self) -> Result<(), DadaError> {
+    /// Makes every metadata change since the last commit durable: file data
+    /// is flushed first, then the dirty metadata blocks (bitmaps and
+    /// superblock included) go through the journal, or in place without one.
+    fn commit(&mut self) -> Result<(), DadaError> {
+        if self.read_only {
+            return Ok(());
+        }
+        for (start, len) in std::mem::take(&mut self.pending_free) {
+            self.mark_blocks(start, len, false)?;
+        }
+        self.stage_bitmaps()?;
+        let mut blocks = self.cache.dirty_blocks();
+        blocks.push((0, superblock_block(&self.sb)));
+        self.dev.flush()?;
+        match &mut self.journal {
+            Some(journal) => journal.commit(&mut self.dev, &blocks)?,
+            None => {
+                for (lba, data) in &blocks {
+                    self.dev.write_block(*lba, data)?;
+                }
+                self.dev.flush()?;
+            }
+        }
+        self.cache.mark_clean();
+        Ok(())
+    }
+
+    /// Commits when enough metadata is waiting. Called between operations,
+    /// when the metadata is consistent.
+    fn maybe_commit(&mut self) -> Result<(), DadaError> {
+        let waiting = self.cache.dirty_count()
+            + self.dirty_block_bitmap.len()
+            + self.dirty_inode_bitmap.len();
+        if waiting >= self.commit_threshold {
+            self.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Called before an operation that may allocate blocks: blocks freed by
+    /// earlier operations become usable once committed.
+    fn prepare_allocation(&mut self) -> Result<(), DadaError> {
+        if !self.pending_free.is_empty() {
+            self.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Copies the changed bitmap blocks into the cache.
+    fn stage_bitmaps(&mut self) -> Result<(), DadaError> {
         let bs = self.sb.block_size as usize;
         for (dirty, start, which) in [
             (
@@ -404,8 +513,7 @@ impl<D: BlockDevice> Volume<D> {
                 self.cache.write(&mut self.dev, start + b, bytes)?;
             }
         }
-        self.cache.write_back(&mut self.dev)?;
-        self.dev.flush()
+        Ok(())
     }
 
     pub fn root(&self) -> Ino {
@@ -537,7 +645,8 @@ impl<D: BlockDevice> Volume<D> {
             }
             self.cache.discard(b);
         }
-        self.mark_blocks(start, len, false)?;
+        // The bitmap is cleared at the next commit.
+        self.pending_free.push((start, len));
         self.sb.free_blocks = (self.sb.free_blocks + len).min(self.sb.total_blocks);
         Ok(())
     }
@@ -1138,6 +1247,7 @@ impl<D: BlockDevice> Volume<D> {
 
     pub fn setattr(&mut self, ino: Ino, changes: &SetAttr) -> Result<Attr, DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let mut inode = self.read_allocated(ino)?;
         if let Some(size) = changes.size {
             match inode.kind()? {
@@ -1168,7 +1278,9 @@ impl<D: BlockDevice> Volume<D> {
         }
         inode.ctime = now_ns();
         self.write_inode(ino, &inode)?;
-        self.attr(ino, &inode)
+        let attr = self.attr(ino, &inode)?;
+        self.maybe_commit()?;
+        Ok(attr)
     }
 
     /// Entries of directory `ino`, `.` and `..` included, after cookie `offset`
@@ -1220,6 +1332,7 @@ impl<D: BlockDevice> Volume<D> {
         init: impl FnOnce(&mut Self, Ino, &mut Inode) -> Result<(), DadaError>,
     ) -> Result<Attr, DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let name = normalize_new(name)?;
         let name = name.as_str();
         let mut dir = self.open_dir(parent)?;
@@ -1243,7 +1356,9 @@ impl<D: BlockDevice> Volume<D> {
             dir.inode.links = dir.inode.links.saturating_add(1);
         }
         self.write_inode(parent, &dir.inode)?;
-        self.attr(ino, &inode)
+        let attr = self.attr(ino, &inode)?;
+        self.maybe_commit()?;
+        Ok(attr)
     }
 
     fn new_inode(kind: FileKind, mode: u16, uid: u32, gid: u32) -> Inode {
@@ -1324,6 +1439,7 @@ impl<D: BlockDevice> Volume<D> {
 
     pub fn link(&mut self, ino: Ino, new_parent: Ino, new_name: &str) -> Result<Attr, DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let new_name = normalize_new(new_name)?;
         let new_name = new_name.as_str();
         let mut inode = self.read_allocated(ino)?;
@@ -1343,7 +1459,9 @@ impl<D: BlockDevice> Volume<D> {
         dir.inode.ctime = now;
         self.write_inode(ino, &inode)?;
         self.write_inode(new_parent, &dir.inode)?;
-        self.attr(ino, &inode)
+        let attr = self.attr(ino, &inode)?;
+        self.maybe_commit()?;
+        Ok(attr)
     }
 
     pub fn unlink(&mut self, parent: Ino, name: &str) -> Result<(), DadaError> {
@@ -1363,11 +1481,12 @@ impl<D: BlockDevice> Volume<D> {
         self.write_inode(parent, &dir.inode)?;
         inode.links = inode.links.saturating_sub(1);
         if inode.links == 0 {
-            self.release_inode(found.ino, inode)
+            self.release_inode(found.ino, inode)?;
         } else {
             inode.ctime = now;
-            self.write_inode(found.ino, &inode)
+            self.write_inode(found.ino, &inode)?;
         }
+        self.maybe_commit()
     }
 
     pub fn rmdir(&mut self, parent: Ino, name: &str) -> Result<(), DadaError> {
@@ -1399,7 +1518,8 @@ impl<D: BlockDevice> Volume<D> {
         dir.inode.ctime = now;
         dir.inode.links = dir.inode.links.saturating_sub(1).max(2);
         self.write_inode(parent, &dir.inode)?;
-        self.release_inode(found.ino, target.inode)
+        self.release_inode(found.ino, target.inode)?;
+        self.maybe_commit()
     }
 
     /// Whether directory `dir` is `ancestor` or lies below it.
@@ -1455,6 +1575,7 @@ impl<D: BlockDevice> Volume<D> {
         new_name: &str,
     ) -> Result<(), DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let name = normalize(name)?;
         if name == "." || name == ".." {
             return Err(DadaError::Invalid);
@@ -1555,7 +1676,7 @@ impl<D: BlockDevice> Volume<D> {
                 }
             }
         }
-        Ok(())
+        self.maybe_commit()
     }
 
     /// For fsck: adds an entry `parent/name` for an allocated inode that no
@@ -1564,6 +1685,7 @@ impl<D: BlockDevice> Volume<D> {
     #[doc(hidden)]
     pub fn attach_orphan(&mut self, ino: Ino, parent: Ino, name: &str) -> Result<(), DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let name = normalize_new(name)?;
         let inode = self.read_allocated(ino)?;
         let kind = inode.kind()?;
@@ -1583,7 +1705,8 @@ impl<D: BlockDevice> Volume<D> {
         let now = now_ns();
         dir.inode.mtime = now;
         dir.inode.ctime = now;
-        self.write_inode(parent, &dir.inode)
+        self.write_inode(parent, &dir.inode)?;
+        self.maybe_commit()
     }
 
     /// Full extent list of a file, directory or symbolic link (empty for
@@ -1606,6 +1729,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Writes `data` at `offset`; writing past the end leaves a hole.
     pub fn write(&mut self, ino: Ino, offset: u64, data: &[u8]) -> Result<usize, DadaError> {
         self.writable()?;
+        self.prepare_allocation()?;
         let mut inode = self.read_allocated(ino)?;
         match inode.kind()? {
             FileKind::RegularFile => {}
@@ -1620,6 +1744,7 @@ impl<D: BlockDevice> Volume<D> {
         inode.mtime = now;
         inode.ctime = now;
         self.write_inode(ino, &inode)?;
+        self.maybe_commit()?;
         Ok(data.len())
     }
 
@@ -1938,8 +2063,10 @@ mod tests {
 
     /// In-memory counters agree with the bitmaps.
     fn check_counters(vol: &Volume<MemDevice>) {
+        // Blocks freed since the last commit are still marked in the bitmap.
+        let pending: u64 = vol.pending_free.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            vol.block_bitmap.count_used(),
+            vol.block_bitmap.count_used() - pending,
             vol.sb.total_blocks - vol.sb.free_blocks
         );
         assert_eq!(
@@ -2295,7 +2422,13 @@ mod tests {
 
         // On-disk bitmaps match the counters too.
         let sb = vol.superblock().clone();
-        let bitmap = load_bitmap(&mut vol.dev, sb.block_bitmap_start, sb.total_blocks).unwrap();
+        let bitmap = load_bitmap(
+            &mut vol.dev,
+            &HashMap::new(),
+            sb.block_bitmap_start,
+            sb.total_blocks,
+        )
+        .unwrap();
         assert_eq!(bitmap.count_used(), sb.total_blocks - sb.free_blocks);
         assert!(bitmap.padding_is_set());
     }

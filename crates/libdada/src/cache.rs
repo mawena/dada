@@ -1,4 +1,8 @@
 //! Write-back LRU cache of metadata blocks.
+//!
+//! Dirty blocks are never evicted: they stay in the cache until the volume
+//! commits them (through the journal when there is one). Only clean blocks
+//! are evicted, least recently used first.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -10,84 +14,91 @@ pub const DEFAULT_CACHE_BLOCKS: usize = 1024;
 struct Entry {
     data: Vec<u8>,
     dirty: bool,
+    /// Position in the LRU list; only clean entries are listed.
     tick: u64,
 }
 
-/// Caches whole blocks. Dirty blocks reach the device when evicted or on `flush`.
 pub struct BlockCache {
     capacity: usize,
     tick: u64,
     entries: HashMap<u64, Entry>,
-    /// Least recently used first: tick -> block.
+    /// Clean entries, least recently used first: tick -> block.
     lru: BTreeMap<u64, u64>,
+    dirty: usize,
+    /// Blocks shown instead of the device content (journal replayed in
+    /// memory on a read-only volume).
+    pinned: HashMap<u64, Vec<u8>>,
 }
 
 impl BlockCache {
-    /// A cache of at most `capacity` blocks (at least one).
+    /// A cache holding at most `capacity` clean blocks (at least one).
     pub fn new(capacity: usize) -> Self {
         BlockCache {
             capacity: capacity.max(1),
             tick: 0,
             entries: HashMap::new(),
             lru: BTreeMap::new(),
+            dirty: 0,
+            pinned: HashMap::new(),
         }
     }
 
-    fn touch(&mut self, lba: u64) {
+    /// Shows `data` as the content of block `lba` until it is written.
+    pub fn pin(&mut self, lba: u64, data: Vec<u8>) {
+        self.pinned.insert(lba, data);
+    }
+
+    fn insert(&mut self, lba: u64, data: Vec<u8>, dirty: bool) {
         self.tick += 1;
-        if let Some(entry) = self.entries.get_mut(&lba) {
-            self.lru.remove(&entry.tick);
-            entry.tick = self.tick;
+        if let Some(old) = self.entries.remove(&lba) {
+            if old.dirty {
+                self.dirty -= 1;
+            } else {
+                self.lru.remove(&old.tick);
+            }
+        }
+        if dirty {
+            self.dirty += 1;
+        } else {
             self.lru.insert(self.tick, lba);
         }
-    }
-
-    fn insert<D: BlockDevice>(
-        &mut self,
-        dev: &mut D,
-        lba: u64,
-        data: Vec<u8>,
-        dirty: bool,
-    ) -> Result<(), DadaError> {
-        self.tick += 1;
-        if let Some(old) = self.entries.insert(
+        self.entries.insert(
             lba,
             Entry {
                 data,
                 dirty,
                 tick: self.tick,
             },
-        ) {
-            self.lru.remove(&old.tick);
-        }
-        self.lru.insert(self.tick, lba);
-        while self.entries.len() > self.capacity {
-            let Some((_, victim)) = self.lru.pop_first() else {
-                break;
-            };
-            if let Some(entry) = self.entries.remove(&victim) {
-                if entry.dirty {
-                    dev.write_block(victim, &entry.data)?;
-                }
+        );
+        while self.lru.len() > self.capacity {
+            if let Some((_, victim)) = self.lru.pop_first() {
+                self.entries.remove(&victim);
             }
         }
-        Ok(())
     }
 
     /// Contents of block `lba`, read from the device on a miss.
     pub fn read<D: BlockDevice>(&mut self, dev: &mut D, lba: u64) -> Result<Vec<u8>, DadaError> {
-        if let Some(entry) = self.entries.get(&lba) {
+        if let Some(entry) = self.entries.get_mut(&lba) {
             let data = entry.data.clone();
-            self.touch(lba);
+            if !entry.dirty {
+                self.lru.remove(&entry.tick);
+                self.tick += 1;
+                entry.tick = self.tick;
+                self.lru.insert(self.tick, lba);
+            }
             return Ok(data);
+        }
+        if let Some(data) = self.pinned.get(&lba) {
+            return Ok(data.clone());
         }
         let mut data = vec![0u8; dev.block_size() as usize];
         dev.read_block(lba, &mut data)?;
-        self.insert(dev, lba, data.clone(), false)?;
+        self.insert(lba, data.clone(), false);
         Ok(data)
     }
 
-    /// Replaces block `lba`; it is written to the device later.
+    /// Replaces block `lba`; it stays dirty until `mark_clean`.
     pub fn write<D: BlockDevice>(
         &mut self,
         dev: &mut D,
@@ -97,32 +108,52 @@ impl BlockCache {
         if data.len() != dev.block_size() as usize || lba >= dev.block_count() {
             return Err(DadaError::Invalid);
         }
-        self.insert(dev, lba, data, true)
+        self.pinned.remove(&lba);
+        self.insert(lba, data, true);
+        Ok(())
     }
 
     /// Forgets block `lba` without writing it (the block was freed).
     pub fn discard(&mut self, lba: u64) {
         if let Some(entry) = self.entries.remove(&lba) {
-            self.lru.remove(&entry.tick);
+            if entry.dirty {
+                self.dirty -= 1;
+            } else {
+                self.lru.remove(&entry.tick);
+            }
         }
     }
 
-    /// Writes every dirty block, in block order. Does not flush the device.
-    pub fn write_back<D: BlockDevice>(&mut self, dev: &mut D) -> Result<(), DadaError> {
-        let mut dirty: Vec<u64> = self
+    pub fn dirty_count(&self) -> usize {
+        self.dirty
+    }
+
+    /// Copies of the dirty blocks, in block order.
+    pub fn dirty_blocks(&self) -> Vec<(u64, Vec<u8>)> {
+        let mut out: Vec<(u64, Vec<u8>)> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.dirty)
+            .map(|(&lba, e)| (lba, e.data.clone()))
+            .collect();
+        out.sort_unstable_by_key(|(lba, _)| *lba);
+        out
+    }
+
+    /// Marks every dirty block clean, once it has reached the device.
+    pub fn mark_clean(&mut self) {
+        let dirty: Vec<u64> = self
             .entries
             .iter()
             .filter(|(_, e)| e.dirty)
             .map(|(&lba, _)| lba)
             .collect();
-        dirty.sort_unstable();
         for lba in dirty {
-            if let Some(entry) = self.entries.get_mut(&lba) {
-                dev.write_block(lba, &entry.data)?;
-                entry.dirty = false;
+            if let Some(entry) = self.entries.remove(&lba) {
+                self.dirty -= 1;
+                self.insert(lba, entry.data, false);
             }
         }
-        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -144,44 +175,60 @@ mod tests {
     }
 
     #[test]
-    fn write_back_is_deferred() {
-        let mut dev = MemDevice::new(1024, 16).unwrap();
-        let mut cache = BlockCache::new(4);
-        cache.write(&mut dev, 3, block(7)).unwrap();
-        assert_eq!(cache.read(&mut dev, 3).unwrap(), block(7));
-        assert_eq!(dev.as_bytes()[3 * 1024], 0, "not written yet");
-        cache.write_back(&mut dev).unwrap();
-        assert_eq!(dev.as_bytes()[3 * 1024], 7);
-    }
-
-    #[test]
-    fn eviction_writes_dirty_blocks_lru_first() {
+    fn dirty_blocks_wait_for_a_commit() {
         let mut dev = MemDevice::new(1024, 16).unwrap();
         let mut cache = BlockCache::new(2);
-        cache.write(&mut dev, 1, block(1)).unwrap();
-        cache.write(&mut dev, 2, block(2)).unwrap();
-        cache.read(&mut dev, 1).unwrap(); // 2 becomes the least recently used
-        cache.write(&mut dev, 3, block(3)).unwrap();
-        assert_eq!(cache.len(), 2);
-        assert_eq!(dev.as_bytes()[2 * 1024], 2, "evicted and written");
-        assert_eq!(dev.as_bytes()[1024], 0, "still cached");
-        // A clean eviction writes nothing.
-        cache.write_back(&mut dev).unwrap();
-        dev.write_block(1, &block(9)).unwrap();
-        cache.read(&mut dev, 5).unwrap();
-        cache.read(&mut dev, 6).unwrap();
-        assert_eq!(dev.as_bytes()[1024], 9);
+        for lba in 1..6 {
+            cache.write(&mut dev, lba, block(lba as u8)).unwrap();
+        }
+        // Over capacity, but dirty blocks are kept and nothing was written.
+        assert_eq!((cache.len(), cache.dirty_count()), (5, 5));
+        assert!(dev.as_bytes().iter().all(|&b| b == 0));
+        let dirty = cache.dirty_blocks();
+        assert_eq!(
+            dirty.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert_eq!(cache.read(&mut dev, 3).unwrap(), block(3));
+
+        // Once clean, they become evictable.
+        cache.mark_clean();
+        assert_eq!((cache.len(), cache.dirty_count()), (2, 0));
     }
 
     #[test]
-    fn discard_drops_pending_writes() {
+    fn clean_blocks_are_evicted_lru_first() {
+        let mut dev = MemDevice::new(1024, 16).unwrap();
+        for lba in 1..4 {
+            dev.write_block(lba, &block(lba as u8)).unwrap();
+        }
+        let mut cache = BlockCache::new(2);
+        cache.read(&mut dev, 1).unwrap();
+        cache.read(&mut dev, 2).unwrap();
+        cache.read(&mut dev, 1).unwrap(); // 2 is now the least recently used
+        cache.read(&mut dev, 3).unwrap();
+        assert_eq!(cache.len(), 2);
+        // 1 is still cached; 2 was evicted, so a device change is visible.
+        dev.write_block(2, &block(9)).unwrap();
+        dev.write_block(1, &block(9)).unwrap();
+        assert_eq!(cache.read(&mut dev, 1).unwrap(), block(1));
+        assert_eq!(cache.read(&mut dev, 2).unwrap(), block(9));
+    }
+
+    #[test]
+    fn discard_and_pins() {
         let mut dev = MemDevice::new(1024, 16).unwrap();
         let mut cache = BlockCache::new(4);
         cache.write(&mut dev, 4, block(4)).unwrap();
         cache.discard(4);
-        cache.write_back(&mut dev).unwrap();
-        assert_eq!(dev.as_bytes()[4 * 1024], 0);
-        assert!(cache.is_empty());
+        assert_eq!(cache.dirty_count(), 0);
+        assert_eq!(cache.read(&mut dev, 4).unwrap(), block(0));
+
+        cache.pin(7, block(7));
+        assert_eq!(cache.read(&mut dev, 7).unwrap(), block(7));
+        cache.write(&mut dev, 7, block(8)).unwrap();
+        cache.mark_clean();
+        assert_eq!(cache.read(&mut dev, 7).unwrap(), block(8));
     }
 
     #[test]
