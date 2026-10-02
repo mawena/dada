@@ -196,6 +196,42 @@ pub const fn extent_block_capacity(block_size: u32) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Journal (SPEC 4.10)
+// ---------------------------------------------------------------------------
+
+pub const JOURNAL_HEADER_MAGIC: [u8; 4] = *b"DJNL";
+pub const JOURNAL_DESCRIPTOR_MAGIC: [u8; 4] = *b"DJDS";
+pub const JOURNAL_COMMIT_MAGIC: [u8; 4] = *b"DJCM";
+
+/// Byte offsets of the journal header (journal block 0).
+pub mod jhdr {
+    pub const MAGIC: usize = 0;
+    pub const SEQUENCE: usize = 8;
+    pub const HEAD: usize = 16;
+    pub const TAIL: usize = 24;
+}
+
+/// Byte offsets of a descriptor block.
+pub mod jdesc {
+    pub const MAGIC: usize = 0;
+    pub const SEQUENCE: usize = 4;
+    pub const COUNT: usize = 12;
+    pub const TARGETS: usize = 16;
+}
+
+/// Byte offsets of a commit block.
+pub mod jcommit {
+    pub const MAGIC: usize = 0;
+    pub const SEQUENCE: usize = 4;
+    pub const DATA_CRC: usize = 12;
+}
+
+/// Target addresses a descriptor block holds (the last 4 bytes are its checksum).
+pub const fn journal_descriptor_capacity(block_size: u32) -> usize {
+    (block_size as usize - 4 - jdesc::TARGETS) / 8
+}
+
+// ---------------------------------------------------------------------------
 // Directories (SPEC 4.8)
 // ---------------------------------------------------------------------------
 

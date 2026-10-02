@@ -23,6 +23,7 @@ pub mod error;
 pub mod extent;
 pub mod format;
 pub mod inode;
+pub mod journal;
 pub mod layout;
 mod le;
 pub mod name;
