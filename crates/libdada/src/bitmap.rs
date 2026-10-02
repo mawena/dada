@@ -149,6 +149,26 @@ impl Bitmap {
         None
     }
 
+    /// First-fit search in `lo..hi`: the first clear bit at or after `goal`
+    /// (wrapping around to `lo`), extended to a run of at most `want` clear
+    /// bits. Returns `(start, length)`.
+    pub fn find_run(&self, goal: u64, lo: u64, hi: u64, want: u64) -> Option<(u64, u64)> {
+        let hi = hi.min(self.len);
+        if lo >= hi || want == 0 {
+            return None;
+        }
+        let goal = if (lo..hi).contains(&goal) { goal } else { lo };
+        let start = self
+            .find_clear(goal)
+            .filter(|&s| s < hi)
+            .or_else(|| self.find_clear(lo).filter(|&s| s < goal))?;
+        let mut end = start + 1;
+        while end < hi && end - start < want && !self.get(end).unwrap_or(true) {
+            end += 1;
+        }
+        Some((start, end - start))
+    }
+
     /// Whether every padding bit (past `len()`) is set.
     pub fn padding_is_set(&self) -> bool {
         let mut i = self.len;
@@ -212,6 +232,27 @@ mod tests {
         assert_eq!(b.find_clear(0), None);
         b.set(64, false).unwrap();
         assert_eq!(b.find_clear(0), Some(64));
+    }
+
+    #[test]
+    fn runs() {
+        let mut b = Bitmap::new(100, 16).unwrap();
+        b.set_range(0, 10, true).unwrap();
+        b.set_range(20, 5, true).unwrap();
+        assert_eq!(b.find_run(0, 10, 90, 4), Some((10, 4)));
+        assert_eq!(b.find_run(15, 10, 90, 100), Some((15, 5)));
+        assert_eq!(b.find_run(22, 10, 90, 3), Some((25, 3)));
+        // The run stops at `hi`.
+        assert_eq!(b.find_run(85, 10, 90, 10), Some((85, 5)));
+        // Wraps around to `lo` when nothing is free after the goal.
+        b.set_range(25, 75, true).unwrap();
+        assert_eq!(b.find_run(50, 10, 90, 2), Some((10, 2)));
+        // A goal outside the range starts at `lo`.
+        assert_eq!(b.find_run(5, 10, 90, 1), Some((10, 1)));
+        b.set_range(10, 10, true).unwrap();
+        assert_eq!(b.find_run(50, 10, 90, 2), None);
+        assert_eq!(b.find_run(0, 50, 50, 1), None);
+        assert_eq!(b.find_run(0, 0, 100, 0), None);
     }
 
     #[test]

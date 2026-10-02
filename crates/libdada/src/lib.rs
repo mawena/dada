@@ -15,6 +15,7 @@
 )]
 
 pub mod bitmap;
+pub mod cache;
 pub mod crc;
 pub mod device;
 pub mod dir;
