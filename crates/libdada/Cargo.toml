@@ -4,6 +4,7 @@ description = "Core library of the dada portable filesystem"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [features]
 # Test helpers (FaultyDevice) for the integration tests.

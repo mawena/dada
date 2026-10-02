@@ -4,6 +4,7 @@ description = "Format a volume with the dada filesystem"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "mkfs-dada"

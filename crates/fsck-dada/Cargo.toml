@@ -4,6 +4,7 @@ description = "Check and repair a dada filesystem"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "fsck-dada"

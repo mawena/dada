@@ -15,6 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["mawena"]
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 libdada = { path = "crates/libdada" }

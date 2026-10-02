@@ -186,3 +186,16 @@ cd fuzz && cargo +nightly fuzz run open_image          # fuzzing (cargo install 
 Random tests print their seed; replay a failure with `DADA_SEED=<seed>`.
 `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass before
 every commit.
+
+## License
+
+Copyright (C) 2026 mawena.
+
+dada is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License, version 3, as published by the Free
+Software Foundation. It is distributed without any warranty; see
+[LICENSE](LICENSE) for the full text.
+
+The Windows adapter links the WinFsp bindings (`winfsp` crate, GPL-3.0) and
+needs [WinFsp](https://winfsp.dev/) at run time. The macOS adapter needs
+macFUSE or FUSE-T, which have their own licenses.

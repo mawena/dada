@@ -4,6 +4,7 @@ description = "WinFsp adapter for dada (Windows)"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "dada-winfsp"
