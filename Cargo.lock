@@ -166,6 +166,7 @@ dependencies = [
 name = "dada-tests"
 version = "0.1.0"
 dependencies = [
+ "fsck-dada",
  "libdada",
  "rand",
  "tempfile",

@@ -21,7 +21,12 @@ path = "tree.rs"
 name = "fragmentation"
 path = "fragmentation.rs"
 
+[[test]]
+name = "crash"
+path = "crash.rs"
+
 [dependencies]
-libdada.workspace = true
+fsck-dada = { path = "../crates/fsck-dada" }
+libdada = { workspace = true, features = ["testing"] }
 rand = "0.9"
 tempfile = "3.27.0"
