@@ -40,6 +40,43 @@ jobs:
           target/debug/dadactl info "$img"
           target/debug/dadactl ls "$img" /
 
+  fuse-linux:
+    name: FUSE (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: install fuse3
+        run: sudo apt-get update && sudo apt-get install -y fuse3
+      - name: clippy (fuse feature)
+        run: cargo clippy -p dada-fuse --features fuse --all-targets -- -D warnings
+      - name: test (fuse feature)
+        run: cargo test -p dada-fuse --features fuse
+      - name: build
+        run: cargo build --release -p dada-fuse --features fuse -p mkfs-dada -p fsck-dada -p dadactl
+      - name: mount test
+        run: tests/fuse/run.sh
+
+  fuse-macos:
+    name: FUSE (macOS, build only)
+    runs-on: macos-latest
+    # macFUSE needs a kernel extension that hosted runners cannot load; only
+    # the build is checked, and it does not block the pipeline.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install macFUSE
+        run: brew install --cask macfuse
+      - name: build
+        run: cargo build -p dada-fuse --features macos
+
   long-tests:
     name: long tests (ignored)
     # Several GiB of I/O: only on main and on demand.
