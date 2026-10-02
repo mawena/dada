@@ -16,6 +16,7 @@ use libdada::format::{
     INODE_INLINE_EXTENTS, INODE_SIZE, INO_JOURNAL, INO_ROOT, RESERVED_INODES, STATE_CLEAN,
 };
 use libdada::inode::{FileKind, Inode, InodeData};
+use libdada::journal::{self, Overlay};
 use libdada::name::fold;
 use libdada::superblock::Superblock;
 use libdada::{BlockDevice, DadaError, Volume};
@@ -60,9 +61,52 @@ impl Report {
 /// and the device. An `Err` is a runtime error (I/O, unsupported feature).
 pub fn check<D: BlockDevice>(mut dev: D, opts: Options) -> Result<(Report, D), DadaError> {
     let mut report = Report::default();
-    let Some(sb) = load_superblock(&mut dev, opts, &mut report)? else {
+    let Some(mut sb) = load_superblock(&mut dev, opts, &mut report)? else {
         return Ok((report, dev));
     };
+    let mut pending = None;
+    if sb.features_incompat & INCOMPAT_JOURNAL != 0 {
+        match journal::scan(&mut dev, &sb) {
+            Ok(replay) if sb.state != STATE_CLEAN && replay.transactions > 0 => {
+                report.notes.push(format!(
+                    "journal: {} committed transactions replayed",
+                    replay.transactions
+                ));
+                if opts.repair {
+                    sb = journal::apply(&mut dev, &sb, &replay)?;
+                } else {
+                    pending = Some(replay.latest());
+                }
+            }
+            Ok(_) => {}
+            Err(DadaError::Io(e)) => return Err(DadaError::Io(e)),
+            Err(e) => {
+                if problem(&mut report, opts, format!("{e}; resetting the journal")) {
+                    journal::initialize(&mut dev, &sb)?;
+                    dev.flush()?;
+                }
+            }
+        }
+    }
+    match pending {
+        // Checking without repairing: look at the volume as the replay
+        // would leave it, without writing anything.
+        Some(blocks) => {
+            let mut overlay = Overlay::new(dev, blocks);
+            let sb = read_sb(&mut overlay, 0)?;
+            let (report, overlay) = run_checker(overlay, sb, opts, report)?;
+            Ok((report, overlay.into_inner()))
+        }
+        None => run_checker(dev, sb, opts, report),
+    }
+}
+
+fn run_checker<D: BlockDevice>(
+    dev: D,
+    sb: Superblock,
+    opts: Options,
+    report: Report,
+) -> Result<(Report, D), DadaError> {
     let mut checker = Checker::new(dev, sb, opts, report)?;
     checker.run()?;
     checker.finish()
