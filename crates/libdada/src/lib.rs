@@ -4,16 +4,18 @@
 //! contains no OS-specific code.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
-/// Version of the on-disk format implemented by this crate.
-pub const FORMAT_VERSION: u16 = 1;
+pub mod error;
+pub mod format;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_version_is_one() {
-        assert_eq!(FORMAT_VERSION, 1);
-    }
-}
+pub use error::DadaError;
+pub use format::FORMAT_VERSION;

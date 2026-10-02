@@ -6,3 +6,9 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+crc32c = "0.6.8"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3.27.0"
