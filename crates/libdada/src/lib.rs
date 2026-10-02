@@ -17,6 +17,7 @@
 pub mod bitmap;
 pub mod crc;
 pub mod device;
+pub mod dir;
 pub mod error;
 pub mod extent;
 pub mod format;
