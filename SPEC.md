@@ -114,6 +114,12 @@ explicite suggérant `fsck-dada` (seul fsck répare).
 
 L'inode `n` se trouve à l'octet `n * 256` de la table des inodes.
 
+Le formatage met toute la table des inodes à 0. Un emplacement de 256 octets
+entièrement nul est un inode jamais utilisé : il est libre et n'a pas de
+checksum à vérifier. Tout autre emplacement doit avoir un checksum valide. Un
+inode avec `links = 0` est libre ; seul son champ `generation` est significatif
+et son type n'est pas vérifié.
+
 | Offset | Taille | Champ | Description |
 |---|---|---|---|
 | 0 | 4 | mode | Type (bits 12-15) + droits POSIX (bits 0-11) |
