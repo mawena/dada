@@ -1,0 +1,13 @@
+[package]
+name = "mkfs-dada"
+description = "Format a volume with the dada filesystem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mkfs-dada"
+path = "src/main.rs"
+
+[dependencies]
+libdada.workspace = true

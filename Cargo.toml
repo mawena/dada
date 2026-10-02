@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/libdada",
+    "crates/mkfs-dada",
+    "crates/fsck-dada",
+    "crates/dadactl",
+    "crates/dada-fuse",
+    "crates/dada-winfsp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["mawena"]
+
+[workspace.dependencies]
+libdada = { path = "crates/libdada" }

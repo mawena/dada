@@ -1,0 +1,8 @@
+[package]
+name = "libdada"
+description = "Core library of the dada portable filesystem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]

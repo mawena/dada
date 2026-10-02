@@ -1,0 +1,17 @@
+[package]
+name = "dada-winfsp"
+description = "WinFsp adapter for dada (Windows)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dada-winfsp"
+path = "src/main.rs"
+
+[dependencies]
+libdada.workspace = true
+
+[features]
+# Real adapter, disabled by default so CI builds without WinFsp (enabled at milestone 8).
+winfsp = []

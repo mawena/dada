@@ -1,0 +1,19 @@
+[package]
+name = "dada-fuse"
+description = "FUSE adapter for dada (Linux, macOS)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dada-fuse"
+path = "src/main.rs"
+
+[dependencies]
+libdada.workspace = true
+
+[features]
+# Real adapter, disabled by default so CI builds without libfuse (enabled at milestone 7).
+fuse = []
+# macOS build against macFUSE or FUSE-T.
+macos = ["fuse"]

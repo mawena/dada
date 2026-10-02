@@ -1,0 +1,13 @@
+[package]
+name = "fsck-dada"
+description = "Check and repair a dada filesystem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "fsck-dada"
+path = "src/main.rs"
+
+[dependencies]
+libdada.workspace = true

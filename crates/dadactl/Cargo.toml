@@ -1,0 +1,13 @@
+[package]
+name = "dadactl"
+description = "Inspect and manipulate dada images"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dadactl"
+path = "src/main.rs"
+
+[dependencies]
+libdada.workspace = true

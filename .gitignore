@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.img
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
